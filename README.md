@@ -38,6 +38,10 @@ $request->method;                  // 'POST'
 $request->path;                    // '/orders/7'
 $request->header( 'X-Signature' ); // any case
 $request->cookie( 'session' );     // '' when it is not there
+
+Response::redirect( '/orders' )->with( array(
+    'Set-Cookie' => Cookie::header( 'session', $value, $session->cookie_options( $request->secure ) ),
+) );
 $request->json();                  // decoded body, or array()
 $request->input( 'email' );        // form body, then JSON, then query string
 $request->has( 'newsletter' );     // submitted at all? (an unchecked box is not)
