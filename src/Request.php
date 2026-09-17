@@ -163,6 +163,26 @@ final readonly class Request {
 	}
 
 	/**
+	 * Was this field submitted at all?
+	 *
+	 * Distinct from `'' !== input( $key )`, and the difference is a checkbox:
+	 * an unchecked one sends nothing, which input() cannot tell apart from a
+	 * text field somebody cleared. A form that saves settings needs to know
+	 * which — the first means false, the second means empty.
+	 *
+	 * @since 1.1.0
+	 *
+	 * @param string $key Field name.
+	 *
+	 * @return bool
+	 */
+	public function has( string $key ): bool {
+		return array_key_exists( $key, $this->form )
+			|| array_key_exists( $key, $this->query )
+			|| array_key_exists( $key, $this->json() );
+	}
+
+	/**
 	 * Did this request arrive over TLS?
 	 *
 	 * Behind a proxy the connection to this process may be plain HTTP while

@@ -39,6 +39,7 @@ $request->path;                    // '/orders/7'
 $request->header( 'X-Signature' ); // any case
 $request->json();                  // decoded body, or array()
 $request->input( 'email' );        // form body, then JSON, then query string
+$request->has( 'newsletter' );     // submitted at all? (an unchecked box is not)
 $request->is_https();
 $request->ip( TrustedProxies::cloudflare() );
 ```

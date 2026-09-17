@@ -125,4 +125,23 @@ final class RequestTest extends TestCase {
 
 		$this->assertSame( '198.51.100.7', $request->ip( TrustedProxies::local() ) );
 	}
+
+	/**
+	 * An unchecked checkbox sends nothing, which input() cannot tell apart
+	 * from a text field somebody cleared.
+	 */
+	public function test_has_distinguishes_absent_from_empty(): void {
+		$request = $this->request( array( 'form' => array( 'cleared' => '' ) ) );
+
+		$this->assertTrue( $request->has( 'cleared' ) );
+		$this->assertFalse( $request->has( 'unchecked' ) );
+		$this->assertSame( '', $request->input( 'cleared' ) );
+		$this->assertSame( '', $request->input( 'unchecked' ) );
+	}
+
+	public function test_has_looks_everywhere_input_does(): void {
+		$this->assertTrue( $this->request( array( 'query' => array( 'a' => '1' ) ) )->has( 'a' ) );
+		$this->assertTrue( $this->request( array( 'body' => '{"a":null}' ) )->has( 'a' ) );
+		$this->assertFalse( $this->request()->has( 'a' ) );
+	}
 }
