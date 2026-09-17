@@ -31,6 +31,25 @@ final class RequestTest extends TestCase {
 		) ) );
 	}
 
+	public function test_a_cookie_is_read_by_name(): void {
+		$request = new Request( 'GET', '/', 'example.test', cookies: array( 'session' => 'abc' ) );
+
+		$this->assertSame( 'abc', $request->cookie( 'session' ) );
+	}
+
+	public function test_a_missing_cookie_is_an_empty_string(): void {
+		$this->assertSame( '', ( new Request( 'GET', '/', 'example.test' ) )->cookie( 'session' ) );
+	}
+
+	/**
+	 * $_COOKIE is whatever the client sent, and a client can send an array.
+	 */
+	public function test_a_cookie_that_is_not_a_string_is_an_empty_string(): void {
+		$request = new Request( 'GET', '/', 'example.test', cookies: array( 'session' => array( 'a' ) ) );
+
+		$this->assertSame( '', $request->cookie( 'session' ) );
+	}
+
 	public function test_headers_are_read_case_insensitively(): void {
 		$request = $this->request( array( 'headers' => array( 'x-csrf-token' => 'abc' ) ) );
 

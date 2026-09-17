@@ -44,6 +44,7 @@ final readonly class Request {
 	 *                                       forwarding header is considered.
 	 * @param bool                  $secure  Whether the connection to this
 	 *                                       process was itself TLS.
+	 * @param array<string, string> $cookies Cookies sent with the request.
 	 */
 	public function __construct(
 		public string $method,
@@ -57,6 +58,7 @@ final readonly class Request {
 		public string $prefix = '',
 		public string $remote = '',
 		public bool $secure = false,
+		public array $cookies = array(),
 	) {}
 
 	/**
@@ -88,7 +90,27 @@ final readonly class Request {
 			prefix:  $resolved['prefix'],
 			remote:  (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ),
 			secure:  ! empty( $_SERVER['HTTPS'] ) && 'off' !== strtolower( (string) $_SERVER['HTTPS'] ),
+			cookies: $_COOKIE,
 		);
+	}
+
+	/**
+	 * One cookie, or ''.
+	 *
+	 * Reading `$request->cookies['x'] ?? ''` at every call site is the same
+	 * thing with more chances to forget the coalesce, and a cookie is
+	 * missing far more often than a header is.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param string $name Cookie name.
+	 *
+	 * @return string
+	 */
+	public function cookie( string $name ): string {
+		$value = $this->cookies[ $name ] ?? '';
+
+		return is_string( $value ) ? $value : '';
 	}
 
 	/**

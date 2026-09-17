@@ -37,6 +37,7 @@ test that has to build `$_SERVER` is a test nobody writes.
 $request->method;                  // 'POST'
 $request->path;                    // '/orders/7'
 $request->header( 'X-Signature' ); // any case
+$request->cookie( 'session' );     // '' when it is not there
 $request->json();                  // decoded body, or array()
 $request->input( 'email' );        // form body, then JSON, then query string
 $request->has( 'newsletter' );     // submitted at all? (an unchecked box is not)
