@@ -143,7 +143,7 @@ final readonly class Response {
 	 * @return self
 	 */
 	public function with( array $headers ): self {
-		return new self( $this->status, $this->body, $this->headers + $headers );
+		return clone( $this, array( 'headers' => $this->headers + $headers ) );
 	}
 
 	/**
