@@ -63,6 +63,60 @@ final class Router {
 	}
 
 	/**
+	 * Register routes that all pass the same check first.
+	 *
+	 * The check runs before the handler, on every request that matches one
+	 * of the group's routes. It returns a Response to refuse — a 401, a
+	 * redirect to sign in — or anything else to let the request through, and
+	 * whatever it returned is handed to the handler as its second argument,
+	 * after the request and before the captured segments. So a guard that
+	 * authenticates returns the caller, and no handler has to ask again.
+	 *
+	 * Without this, every handler behind the same check repeats it, and the
+	 * one that forgets is the hole.
+	 *
+	 * ```php
+	 * $router->group(
+	 *     fn( Request $r ) => $auth->account( $r ) ?? Response::json( array( 'error' => 'Sign in' ), 401 ),
+	 *     function ( Router $routes ): void {
+	 *         $routes->get( '/api/files', fn( $r, string $account ) => $this->files( $account ) );
+	 *         $routes->get( '/api/files/{id}', fn( $r, string $account, $id ) => $this->file( $account, $id ) );
+	 *     }
+	 * );
+	 * ```
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param callable $guard  Receives the request; returns a Response to
+	 *                         refuse, or a value to pass on.
+	 * @param callable $define Receives a Router to register the group on.
+	 * @param string   $prefix Prepended to every pattern in the group.
+	 *
+	 * @return self
+	 */
+	public function group( callable $guard, callable $define, string $prefix = '' ): self {
+		$inner = new self();
+
+		$define( $inner );
+
+		foreach ( $inner->routes as $route ) {
+			$handler = $route['handler'];
+
+			$this->add(
+				$route['method'],
+				$prefix . $route['pattern'],
+				static function ( Request $request, string ...$params ) use ( $guard, $handler ): Response {
+					$passed = $guard( $request );
+
+					return $passed instanceof Response ? $passed : $handler( $request, $passed, ...$params );
+				}
+			);
+		}
+
+		return $this;
+	}
+
+	/**
 	 * Register a route that answers any method. For endpoints where the verb
 	 * carries no meaning — a webhook, a callback — and rejecting the wrong one
 	 * only produces a support question.

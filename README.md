@@ -27,6 +27,23 @@ $router->post( '/orders', fn( $r ) => $this->create( $r ) );
 `dispatch()` returns null rather than a 404, so the caller decides what nothing
 matched looks like — an HTML page on one surface, a JSON body on another.
 
+## Groups
+
+Routes behind the same check are registered together, and the check runs
+before any of their handlers. It returns a `Response` to refuse, or a value —
+usually the authenticated caller — that each handler receives as its second
+argument. A handler that forgot to check cannot exist.
+
+```php
+$router->group(
+    fn( Request $r ) => $auth->account( $r ) ?? Response::json( array( 'error' => 'Sign in' ), 401 ),
+    function ( Router $routes ): void {
+        $routes->get( '/api/files', fn( Request $r, string $account ) => files( $account ) );
+        $routes->post( '/api/files/{id}/delete', fn( Request $r, string $account, string $id ) => remove( $account, $id ) );
+    }
+);
+```
+
 ## Request
 
 Captured once, immutable afterwards. The point is that nothing downstream
