@@ -9,7 +9,7 @@ declare( strict_types=1 );
 
 namespace SugarCommerce\Http;
 
-use SugarCommerce\Network\{ClientIp, TrustedProxies};
+use SugarCommerce\Network\{ClientIp, Cloudflare, TrustedProxies};
 
 /**
  * Class Request
@@ -29,6 +29,36 @@ use SugarCommerce\Network\{ClientIp, TrustedProxies};
 final readonly class Request {
 
 	/**
+	 * Headers a proxy or tunnel adds when it forwards a request.
+	 *
+	 * Behind any of them the socket address is the proxy's — loopback, for a
+	 * tunnel or a reverse proxy on the same box — so their presence alone
+	 * proves the request crossed a network, whatever address they claim.
+	 *
+	 * @since 1.5.0
+	 */
+	public const array FORWARDED = array(
+		'x-forwarded-for',
+		'x-forwarded-host',
+		'x-real-ip',
+		'forwarded',
+		'cf-connecting-ip',
+		'cf-ray',
+		'true-client-ip',
+	);
+
+	/**
+	 * Socket addresses that mean "this request did not cross a network".
+	 *
+	 * An empty address is not here: "we could not tell" is not the same as
+	 * "this machine", and treating it as local lets in anything that hides
+	 * its address.
+	 *
+	 * @since 1.5.0
+	 */
+	public const array LOOPBACK = array( '127.0.0.1', '::1' );
+
+	/**
 	 * @param string                $method  Upper-case verb.
 	 * @param string                $path    Path, with any surface prefix
 	 *                                       already resolved.
@@ -45,6 +75,13 @@ final readonly class Request {
 	 * @param bool                  $secure  Whether the connection to this
 	 *                                       process was itself TLS.
 	 * @param array<string, string> $cookies Cookies sent with the request.
+	 * @param string                $uri_path The path as the client sent it,
+	 *                                        before any surface was
+	 *                                        resolved — for routing that has
+	 *                                        to happen ahead of surfaces,
+	 *                                        such as a custom domain. ''
+	 *                                        when the request was built by
+	 *                                        hand rather than captured.
 	 */
 	public function __construct(
 		public string $method,
@@ -59,6 +96,7 @@ final readonly class Request {
 		public string $remote = '',
 		public bool $secure = false,
 		public array $cookies = array(),
+		public string $uri_path = '',
 	) {}
 
 	/**
@@ -91,6 +129,7 @@ final readonly class Request {
 			remote:  (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ),
 			secure:  ! empty( $_SERVER['HTTPS'] ) && 'off' !== strtolower( (string) $_SERVER['HTTPS'] ),
 			cookies: $_COOKIE,
+			uri_path: (string) ( parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '/' ), PHP_URL_PATH ) ?: '/' ),
 		);
 	}
 
@@ -241,6 +280,111 @@ final readonly class Request {
 	 */
 	public function ip( ?TrustedProxies $proxies = null ): string {
 		return ( new ClientIp( $proxies ?? TrustedProxies::none() ) )->resolve( $this->server() ) ?? '';
+	}
+
+	/**
+	 * The token from `Authorization: Bearer …`, or ''.
+	 *
+	 * The header only, never the body or the query: a key in a URL ends up
+	 * in logs and Referer headers, and one in a body is one a form on
+	 * another site could be made to send. Anything that is not exactly one
+	 * Bearer credential — Basic, two tokens, a bare scheme — is no token,
+	 * rather than a guess at which part was meant.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @return string
+	 */
+	public function bearer(): string {
+		return 1 === preg_match( '/^Bearer\s+(\S+)$/i', trim( $this->header( 'authorization' ) ), $match ) ? $match[1] : '';
+	}
+
+	/**
+	 * The path this surface's cookies should be confined to.
+	 *
+	 * Where every surface shares one hostname — locally, behind path
+	 * prefixes — a cookie set at `/` would be sent to all of them: a
+	 * seller's session riding along on every buyer download. Its own
+	 * prefix keeps it home. Where a surface has its own hostname the
+	 * hostname is already the boundary, and the answer is `/`.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @return string
+	 */
+	public function cookie_path(): string {
+		return '' === $this->prefix ? '/' : $this->prefix;
+	}
+
+	/**
+	 * The country Cloudflare says the visitor is in, or ''.
+	 *
+	 * Believed only when the request actually came from one of the given
+	 * proxies — otherwise `CF-IPCountry` is a header anybody can set, and a
+	 * shopper could pick their own prices, or their own tax, by typing one.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @param TrustedProxies $proxies The proxies whose headers are believed.
+	 *
+	 * @return string ISO 3166-1 alpha-2 code (or Cloudflare's `XX`/`T1`), or ''.
+	 */
+	public function country( TrustedProxies $proxies ): string {
+		$cloudflare = new Cloudflare( $proxies );
+
+		return $cloudflare->is_active( $this->server_vars() )
+			? (string) ( $cloudflare->country( $this->server_vars() ) ?? '' )
+			: '';
+	}
+
+	/**
+	 * Did this request come from this machine, and nowhere else?
+	 *
+	 * For gating the development conveniences that must never be reachable
+	 * from outside — a panel with no password set, an unsigned fallback.
+	 *
+	 * Deliberately never consults a forwarding header. ip() believes one
+	 * from a trusted proxy, which is right for rate limits and wrong here: a
+	 * client can put 127.0.0.1 in X-Forwarded-For and a CDN edge will pass
+	 * it along. So the socket address must be loopback **and** nothing may
+	 * have forwarded the request at all — which also shuts out a tunnel or a
+	 * reverse proxy on the same box, whose requests arrive from loopback
+	 * carrying exactly those headers.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @param string[] $local Socket addresses that count as this machine.
+	 *
+	 * @return bool
+	 */
+	public function is_local( array $local = self::LOOPBACK ): bool {
+		if ( '' === $this->remote || ! in_array( $this->remote, $local, true ) ) {
+			return false;
+		}
+
+		foreach ( self::FORWARDED as $header ) {
+			if ( '' !== $this->header( $header ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * This request as a `$_SERVER`-shaped array.
+	 *
+	 * For libraries that read the superglobal's shape — the network
+	 * package's ClientIp and Cloudflare among them — so they can be handed
+	 * this request instead of the process's globals, and be tested with one.
+	 * Only REMOTE_ADDR and the `HTTP_*` headers are present.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @return array<string, string>
+	 */
+	public function server_vars(): array {
+		return $this->server();
 	}
 
 	/**
