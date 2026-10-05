@@ -131,6 +131,70 @@ final readonly class Response {
 	}
 
 	/**
+	 * A file for the browser to save.
+	 *
+	 * `private, no-store` because a download built per request is almost
+	 * always somebody's own data — an export, a list of their customers —
+	 * and a shared cache keeping a copy is a leak. nosniff so a CSV that
+	 * happens to look like HTML is never rendered as a page.
+	 *
+	 * The Content-Disposition value is taken whole rather than built from a
+	 * filename here. Doing it properly is RFC 6266: an ASCII fallback for
+	 * old clients plus `filename*=UTF-8''…` for everybody else, with quotes,
+	 * backslashes and control characters handled — and that already lives
+	 * in sugarcommerce/s3-signer's `ContentDisposition::attachment()`.
+	 * Build it there; a second copy here would be the one that drifts.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @param string                $body        The file's bytes.
+	 * @param string                $type        Content-Type, e.g.
+	 *                                           `text/csv; charset=utf-8`.
+	 * @param string                $disposition A complete Content-Disposition
+	 *                                           value.
+	 * @param array<string, string> $headers     Extra headers. These win.
+	 *
+	 * @return self
+	 */
+	public static function download( string $body, string $type, string $disposition, array $headers = array() ): self {
+		return new self( 200, $body, $headers + array(
+			'Content-Type'           => $type,
+			'Content-Disposition'    => $disposition,
+			'Cache-Control'          => 'private, no-store',
+			'X-Content-Type-Options' => 'nosniff',
+		) );
+	}
+
+	/**
+	 * Run some work once the visitor has their response.
+	 *
+	 * The one place in this package that schedules anything, and it is here
+	 * because the alternative is worse: work done before the response is
+	 * returned — a webhook, an email, a counter — is time the visitor
+	 * waits for and, for a request that can be timed, a side channel.
+	 * Under PHP-FPM the connection is closed first, so the visitor neither
+	 * waits nor can measure. Elsewhere (the built-in server, the CLI) the
+	 * work still runs, just before the process ends.
+	 *
+	 * Nothing is sent by calling this; it only registers the work.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @param \Closure $work What to run.
+	 *
+	 * @return void
+	 */
+	public static function defer( \Closure $work ): void {
+		register_shutdown_function( static function () use ( $work ): void {
+			if ( function_exists( 'fastcgi_finish_request' ) ) {
+				fastcgi_finish_request();
+			}
+
+			$work();
+		} );
+	}
+
+	/**
 	 * The same response with extra headers.
 	 *
 	 * Existing headers win, so a handler cannot have its content type
