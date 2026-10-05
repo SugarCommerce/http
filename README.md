@@ -64,6 +64,12 @@ $request->input( 'email' );        // form body, then JSON, then query string
 $request->has( 'newsletter' );     // submitted at all? (an unchecked box is not)
 $request->is_https();
 $request->ip( TrustedProxies::cloudflare() );
+$request->bearer();                // `Authorization: Bearer …`, or ''
+$request->cookie_path();           // '/', or the surface's prefix
+$request->country( TrustedProxies::cloudflare() ); // 'DE', or ''
+$request->is_local();              // loopback, and nothing forwarded it
+$request->server_vars();           // $_SERVER-shaped, for other libraries
+$request->uri_path;                // the path as sent, before surfaces
 ```
 
 `input()` checks the form body **first**, and that ordering is not cosmetic. An
@@ -78,6 +84,25 @@ range. Trusting `CF-Connecting-IP` unconditionally means anyone who reaches the
 origin directly — a misconfigured firewall, a leaked origin address — can claim
 to be any address they like, which poisons every log and every rate limit keyed
 on it. The default is to trust nothing; name your proxies.
+
+`country()` is believed the same way: `CF-IPCountry` from anywhere but the
+proxies you name is a header anybody can type, and a shopper could pick their
+own prices with it.
+
+`is_local()` is for the development conveniences that must never be reachable
+from outside, and it deliberately **never** consults a forwarding header. A
+client can put `127.0.0.1` in `X-Forwarded-For` and an edge will pass it along;
+a tunnel or reverse proxy on the same box arrives from loopback carrying exactly
+those headers. So the socket address must be loopback and nothing may have
+forwarded the request at all. An empty address is never local: "we could not
+tell" is not "this machine".
+
+`bearer()` reads the header only. A key in a URL ends up in logs, and one in a
+body is one a form on another site could be made to send.
+
+`cookie_path()` keeps a prefixed surface's cookies under its prefix, so a
+seller's session does not ride along on every buyer download when every
+surface shares one hostname locally.
 
 ## Surfaces
 
@@ -121,14 +146,29 @@ Response::html( $markup );
 Response::text( $body );
 Response::redirect( '/somewhere' );
 Response::preflight( Headers::cors() );
+Response::download( $csv, 'text/csv; charset=utf-8', ContentDisposition::attachment( $name ) );
 
 $response->with( array( 'Retry-After' => '60' ) );
+
+Response::defer( fn() => $mailer->send( $receipt ) ); // after the visitor has their page
 ```
 
 `error()` exists because the alternative is what every API ends up with: the
 same literal string written out at twenty call sites, three of which say
 something slightly different for no reason. Existing headers win in `with()`,
 so a handler cannot have its content type rewritten by something wrapping it.
+
+`download()` is `private, no-store` and `nosniff`: a file built per request is
+somebody's own data, and a CSV that looks like HTML must never be rendered as a
+page. It takes the Content-Disposition value whole. Building one properly is
+RFC 6266 — an ASCII fallback plus `filename*=UTF-8''…`, with quotes and control
+characters handled — and that already lives in
+[s3-signer](https://github.com/sugarcommerce/s3-signer)'s
+`ContentDisposition::attachment()`. Use it rather than writing a second copy.
+
+`defer()` is the one place this package schedules work. Under PHP-FPM the
+connection is closed first, so the visitor neither waits for the work nor can
+time it; elsewhere it still runs, just before the process ends.
 
 ## Headers
 
@@ -142,6 +182,11 @@ Headers::json();                    // no-store, nosniff, no CORS
 Headers::cors( 'https://example.com' );
 Headers::with_hsts( $headers, $request->is_https() );
 Headers::nonce();                   // for the one inline script you meant
+Headers::nonce_attribute();         // ' nonce="…"', ready for the tag
+Headers::html( frame_ancestors: '*' );   // a card other sites may frame
+Headers::embeddable( $headers );         // the same, to headers you have
+Headers::merge_sources( $uploads, $viewer ); // directive => sources, appended
+Headers::cors_for( $request->header( 'origin' ), $sellers_sites );
 ```
 
 The defaults are strict — no CORS, no CDN, no inline script — and everything is
@@ -155,6 +200,24 @@ once per request; render it into the one `<script>` you meant to allow.
 meaningless, and on a local host actively harmful — the browser remembers it and
 then refuses to load `http://localhost` for six months, for every project you
 have.
+
+Framing is refused by default (`frame-ancestors 'none'` and `X-Frame-Options:
+DENY`), which is what stops a page being laid under a transparent button of
+somebody else's. A page meant to be framed names who may frame it, and
+`X-Frame-Options` goes — it can only say DENY or SAMEORIGIN, and would go on
+refusing whatever the policy allowed. `embeddable()` parses the policy and
+replaces the one directive, rather than searching for `'none'` and silently
+doing nothing the day the default changes.
+
+`merge_sources()` appends: a directive named twice ends up with both sets of
+sources, where `+` on arrays would keep only the first and the page would break
+in the browser rather than in a test.
+
+`cors_for()` echoes the caller's origin only when it matches one on the list
+exactly — scheme, host and port — so a suffix match cannot let
+`evil-example.com` in on `example.com`'s name, and `null` matches nothing.
+`Vary: Origin` comes back either way, so a cache cannot hand one caller's answer
+to another.
 
 ## View
 
@@ -184,6 +247,11 @@ code. This is a renderer, not a sandbox.
 ```bash
 composer test
 ```
+
+126 tests — routing and groups, surfaces by host and by prefix, input order,
+cookies and their header, bearer tokens, country and loopback checks against
+forged forwarding headers, downloads, deferred work, framing, source merging,
+the CSP nonce and CORS for named origins.
 
 ## License
 
