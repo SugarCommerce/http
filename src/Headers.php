@@ -25,6 +25,24 @@ namespace SugarCommerce\Http;
 final class Headers {
 
 	/**
+	 * The Referrer-Policy values a browser honours.
+	 *
+	 * @since 1.9.0
+	 *
+	 * @var array<int, string>
+	 */
+	private const array REFERRER_POLICIES = array(
+		'no-referrer',
+		'no-referrer-when-downgrade',
+		'origin',
+		'origin-when-cross-origin',
+		'same-origin',
+		'strict-origin',
+		'strict-origin-when-cross-origin',
+		'unsafe-url',
+	);
+
+	/**
 	 * Per-request CSP nonce, generated once and reused.
 	 *
 	 * @since 1.0.0
@@ -117,22 +135,161 @@ final class Headers {
 			$policy['frame-ancestors'] = self::sources( $frame_ancestors );
 		}
 
-		$directives = array();
-
-		foreach ( $policy as $directive => $sources ) {
-			$directives[] = '' === $sources ? $directive : $directive . ' ' . $sources;
-		}
-
 		$headers = array(
 			'Content-Type'            => 'text/html; charset=utf-8',
 			'X-Content-Type-Options'  => 'nosniff',
 			'X-Frame-Options'         => 'DENY',
 			'Referrer-Policy'         => 'no-referrer',
 			'Permissions-Policy'      => 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
-			'Content-Security-Policy' => implode( '; ', $directives ),
+			'Content-Security-Policy' => self::compile( $policy ),
 		);
 
 		if ( ! self::refuses_framing( $policy['frame-ancestors'] ) ) {
+			unset( $headers['X-Frame-Options'] );
+		}
+
+		return $headers;
+	}
+
+	/**
+	 * Security headers from a strict baseline, every value yours to set.
+	 *
+	 * For an application that knows exactly what its pages load and wants
+	 * the header to say so and no more. html() starts permissive enough to
+	 * work anywhere — `'unsafe-inline'` styles, images from any `https:`
+	 * host — and can only add to that; this starts from nothing but
+	 * `'self'` and replaces a directive's sources outright.
+	 *
+	 * The baseline: `default-src`, `style-src`, `font-src`, `connect-src`,
+	 * `form-action` and `base-uri` are `'self'`, `script-src` is `'self'`
+	 * and the nonce, `img-src` is `'self' data:` and `frame-ancestors` is
+	 * `'none'`. A directive you name replaces the baseline's, and one set to
+	 * null is left out. Yours come first, in the order you gave them, and
+	 * then whatever of the baseline you did not mention — so a policy
+	 * written out in full comes back exactly as written.
+	 *
+	 * The nonce stays in `script-src` however it is replaced: straight after
+	 * `'self'`, or first when there is no `'self'`. A script-src that no
+	 * longer carried it would drop every inline script silently, in the
+	 * browser rather than in a test. Only `'none'` is left alone.
+	 *
+	 * No Content-Type, because these belong on every response — JSON and
+	 * plain text as well as pages. X-Frame-Options stays DENY unless
+	 * frame-ancestors names somebody, as in html(). Add HSTS with
+	 * with_hsts().
+	 *
+	 * ```php
+	 * Headers::strict(
+	 *     array(
+	 *         'script-src' => array( "'self'", 'https://challenges.cloudflare.com' ),
+	 *         'frame-src'  => 'https://challenges.cloudflare.com',
+	 *     ),
+	 *     $nonce,
+	 * );
+	 * ```
+	 *
+	 * @since 1.9.0
+	 *
+	 * @param array<string, string|array<int, string>|null> $directives  Directive =>
+	 *                                                                   sources, as a
+	 *                                                                   string or a
+	 *                                                                   list; null
+	 *                                                                   leaves the
+	 *                                                                   directive out.
+	 * @param string|null                                   $nonce       The script
+	 *                                                                   nonce; null
+	 *                                                                   uses nonce().
+	 * @param string                                        $referrer    Referrer-Policy:
+	 *                                                                   one of the
+	 *                                                                   policies the
+	 *                                                                   spec names.
+	 * @param array<int, string>                            $permissions Features turned
+	 *                                                                   off for every
+	 *                                                                   origin, in
+	 *                                                                   order; none
+	 *                                                                   leaves the
+	 *                                                                   header out.
+	 *
+	 * @return array<string, string>
+	 *
+	 * @throws \InvalidArgumentException When the nonce is not base64, or the
+	 *                                   referrer policy is not one a browser
+	 *                                   would honour — it would ignore the
+	 *                                   header, not fall back to anything
+	 *                                   stricter.
+	 */
+	public static function strict(
+		array $directives = array(),
+		?string $nonce = null,
+		string $referrer = 'strict-origin-when-cross-origin',
+		array $permissions = array( 'geolocation', 'microphone', 'camera', 'payment' ),
+	): array {
+		$nonce ??= self::nonce();
+
+		if ( 1 !== preg_match( '/^[A-Za-z0-9+\/_-]+={0,2}$/', $nonce ) ) {
+			throw new \InvalidArgumentException( 'Not a usable nonce: ' . json_encode( $nonce ) );
+		}
+
+		if ( ! in_array( $referrer, self::REFERRER_POLICIES, true ) ) {
+			throw new \InvalidArgumentException( 'Not a referrer policy: ' . json_encode( $referrer ) );
+		}
+
+		$baseline = array(
+			'default-src'     => "'self'",
+			'script-src'      => "'self'",
+			'style-src'       => "'self'",
+			'img-src'         => "'self' data:",
+			'font-src'        => "'self'",
+			'connect-src'     => "'self'",
+			'form-action'     => "'self'",
+			'frame-ancestors' => "'none'",
+			'base-uri'        => "'self'",
+		);
+		$policy   = array();
+
+		foreach ( $directives as $directive => $sources ) {
+			$directive = self::directive( (string) $directive );
+
+			if ( '' === $directive ) {
+				continue;
+			}
+
+			unset( $baseline[ $directive ], $policy[ $directive ] );
+
+			if ( null !== $sources ) {
+				$policy[ $directive ] = self::sources( implode( ' ', (array) $sources ) );
+			}
+		}
+
+		$policy += $baseline;
+
+		if ( isset( $policy['script-src'] ) ) {
+			$policy['script-src'] = self::with_nonce( $policy['script-src'], "'nonce-" . $nonce . "'" );
+		}
+
+		$denied = array();
+
+		foreach ( $permissions as $feature ) {
+			$feature = self::directive( $feature );
+
+			if ( '' !== $feature ) {
+				$denied[] = $feature . '=()';
+			}
+		}
+
+		$headers = array(
+			'X-Content-Type-Options'  => 'nosniff',
+			'X-Frame-Options'         => 'DENY',
+			'Referrer-Policy'         => $referrer,
+			'Permissions-Policy'      => implode( ', ', $denied ),
+			'Content-Security-Policy' => self::compile( $policy ),
+		);
+
+		if ( array() === $denied ) {
+			unset( $headers['Permissions-Policy'] );
+		}
+
+		if ( isset( $policy['frame-ancestors'] ) && ! self::refuses_framing( $policy['frame-ancestors'] ) ) {
 			unset( $headers['X-Frame-Options'] );
 		}
 
@@ -263,6 +420,49 @@ final class Headers {
 		return '' !== $origin && in_array( $origin, $allowed, true )
 			? self::cors( $origin, $headers, $methods ) + array( 'Vary' => 'Origin' )
 			: array( 'Vary' => 'Origin' );
+	}
+
+	/**
+	 * A policy as its header value.
+	 *
+	 * @since 1.9.0
+	 *
+	 * @param array<string, string> $policy Directive => sources.
+	 *
+	 * @return string
+	 */
+	private static function compile( array $policy ): string {
+		$directives = array();
+
+		foreach ( $policy as $directive => $sources ) {
+			$directives[] = '' === $sources ? $directive : $directive . ' ' . $sources;
+		}
+
+		return implode( '; ', $directives );
+	}
+
+	/**
+	 * A script-src source list with the nonce in it.
+	 *
+	 * @since 1.9.0
+	 *
+	 * @param string $sources Space-separated sources.
+	 * @param string $nonce   The `'nonce-…'` source.
+	 *
+	 * @return string Unchanged when it already has the nonce or is `'none'`.
+	 */
+	private static function with_nonce( string $sources, string $nonce ): string {
+		$list = '' === $sources ? array() : explode( ' ', $sources );
+
+		if ( in_array( $nonce, $list, true ) || array( "'none'" ) === array_map( strtolower( ... ), $list ) ) {
+			return $sources;
+		}
+
+		$self = array_search( "'self'", array_map( strtolower( ... ), $list ), true );
+
+		array_splice( $list, false === $self ? 0 : $self + 1, 0, array( $nonce ) );
+
+		return implode( ' ', $list );
 	}
 
 	/**

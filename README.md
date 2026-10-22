@@ -247,6 +247,7 @@ Headers::html( frame_ancestors: '*' );   // a card other sites may frame
 Headers::embeddable( $headers );         // the same, to headers you have
 Headers::merge_sources( $uploads, $viewer ); // directive => sources, appended
 Headers::cors_for( $request->header( 'origin' ), $sellers_sites );
+Headers::strict( $directives, $nonce );  // 'self' only, sources replaced
 ```
 
 The defaults are strict — no CORS, no CDN, no inline script — and everything is
@@ -255,6 +256,38 @@ opened up by argument. A permissive default is one nobody ever tightens.
 Extra CSP sources are **appended** to a directive rather than replacing it,
 which is what keeps the nonce in place. `Headers::html()` builds that nonce
 once per request; render it into the one `<script>` you meant to allow.
+
+### A strict baseline
+
+`html()` starts permissive enough to work anywhere — `'unsafe-inline'` styles,
+images from any `https:` host — and can only add to that. `strict()` starts from
+`'self'` alone and **replaces** a directive's sources, for an application that
+knows exactly what it loads:
+
+```php
+$headers = Headers::strict(
+    array(
+        'script-src' => array( "'self'", 'https://challenges.cloudflare.com' ),
+        'style-src'  => array( "'self'", 'https://fonts.googleapis.com' ),
+        'frame-src'  => 'https://challenges.cloudflare.com',
+        'img-src'    => null,                            // left out entirely
+    ),
+    nonce: $nonce,                                       // default: Headers::nonce()
+    referrer: 'strict-origin-when-cross-origin',         // the default
+    permissions: array( 'geolocation', 'microphone', 'camera', 'payment' ), // the default
+);
+```
+
+The baseline is `default-src`, `style-src`, `font-src`, `connect-src`,
+`form-action` and `base-uri` of `'self'`, `script-src 'self'` plus the nonce,
+`img-src 'self' data:` and `frame-ancestors 'none'`. The directives you name
+come first, in your order, then whatever of the baseline you did not mention —
+so a policy written out in full comes back byte for byte as written. The nonce
+stays in `script-src` however it is replaced (after `'self'`, or first), because
+a script-src without it drops every inline script silently. There is no
+Content-Type: these headers belong on JSON and text responses as much as pages.
+A referrer policy browsers do not know, or a nonce that is not base64, throws —
+the browser would ignore the header rather than fall back to anything stricter.
 
 `with_hsts()` only adds the header over TLS. Sending it on plain HTTP is
 meaningless, and on a local host actively harmful — the browser remembers it and
@@ -278,6 +311,22 @@ exactly — scheme, host and port — so a suffix match cannot let
 `evil-example.com` in on `example.com`'s name, and `null` matches nothing.
 `Vary: Origin` comes back either way, so a cache cannot hand one caller's answer
 to another.
+
+## Url
+
+A link back to a list page, with only the filters that have a value:
+
+```php
+Url::to( '/admin/customers', array( 'q' => 'alf', 'status' => '' ) ); // '/admin/customers?q=alf'
+Url::to( '/admin/customers', array( 'q' => '' ) );                    // '/admin/customers'
+Url::to( '/orders', array( 'customer' => 0 ), drop_zero: true );      // '/orders'
+```
+
+null and `''` are always dropped, and 0 and `'0'` with `drop_zero` — so a form
+submitted empty does not leave `?q=&status=&sort=` on every link after it. The
+path is held to `Request::local_path()`'s rules and anything else throws: a path
+built from the request that turned out to be `//evil.example` would send every
+link on the page to another site.
 
 ## View
 
@@ -311,10 +360,11 @@ code. This is a renderer, not a sandbox.
 composer test
 ```
 
-126 tests — routing and groups, surfaces by host and by prefix, input order,
+167 tests — routing and groups, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
-the CSP nonce and CORS for named origins.
+the CSP nonce, the strict baseline written out in full, CORS for named
+origins, and query strings that stay on the site.
 
 ## License
 

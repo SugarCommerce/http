@@ -417,4 +417,131 @@ final class ResponseTest extends TestCase {
 
 		$this->assertStringNotContainsString( "; script-src 'unsafe-inline'", $csp );
 	}
+
+	public function test_strict_reproduces_a_policy_written_out_in_full(): void {
+		$nonce   = 'AbC-123_xyz';
+		$headers = Headers::with_hsts(
+			Headers::strict(
+				array(
+					'default-src'     => "'self'",
+					'script-src'      => array( "'self'", 'https://challenges.cloudflare.com' ),
+					'style-src'       => array( "'self'", 'https://fonts.googleapis.com', 'https://cdn.jsdelivr.net' ),
+					'img-src'         => "'self' data:",
+					'font-src'        => array( "'self'", 'https://fonts.gstatic.com', 'https://cdn.jsdelivr.net' ),
+					'connect-src'     => array( "'self'", 'https://challenges.cloudflare.com' ),
+					'frame-src'       => 'https://challenges.cloudflare.com',
+					'form-action'     => "'self'",
+					'frame-ancestors' => "'none'",
+					'base-uri'        => "'self'",
+				),
+				$nonce,
+			),
+			true,
+		);
+
+		$this->assertSame(
+			array(
+				'X-Content-Type-Options'    => 'nosniff',
+				'X-Frame-Options'           => 'DENY',
+				'Referrer-Policy'           => 'strict-origin-when-cross-origin',
+				'Permissions-Policy'        => 'geolocation=(), microphone=(), camera=(), payment=()',
+				'Content-Security-Policy'   => "default-src 'self'; "
+					. "script-src 'self' 'nonce-$nonce' https://challenges.cloudflare.com; "
+					. "style-src 'self' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+					. "img-src 'self' data:; "
+					. "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; "
+					. "connect-src 'self' https://challenges.cloudflare.com; "
+					. "frame-src https://challenges.cloudflare.com; "
+					. "form-action 'self'; "
+					. "frame-ancestors 'none'; "
+					. "base-uri 'self'",
+				'Strict-Transport-Security' => 'max-age=31536000; includeSubDomains',
+			),
+			$headers,
+		);
+	}
+
+	public function test_strict_starts_from_self_and_the_nonce(): void {
+		$this->assertSame(
+			"default-src 'self'; script-src 'self' 'nonce-" . Headers::nonce() . "'; style-src 'self'; img-src 'self' data:; "
+			. "font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
+			Headers::strict()['Content-Security-Policy'],
+		);
+	}
+
+	public function test_strict_has_no_content_type(): void {
+		$this->assertArrayNotHasKey( 'Content-Type', Headers::strict() );
+	}
+
+	public function test_strict_replaces_rather_than_appends(): void {
+		$csp = Headers::strict( array( 'img-src' => 'https://img.example' ) )['Content-Security-Policy'];
+
+		$this->assertStringStartsWith( 'img-src https://img.example; default-src', $csp );
+		$this->assertStringNotContainsString( 'data:', $csp );
+		$this->assertStringNotContainsString( 'unsafe-inline', $csp );
+	}
+
+	public function test_strict_leaves_out_a_directive_set_to_null(): void {
+		$csp = Headers::strict( array( 'img-src' => null, 'Base-URI' => null ) )['Content-Security-Policy'];
+
+		$this->assertStringNotContainsString( 'img-src', $csp );
+		$this->assertStringNotContainsString( 'base-uri', $csp );
+	}
+
+	public function test_strict_keeps_the_nonce_in_a_replaced_script_src(): void {
+		$this->assertStringContainsString(
+			"script-src 'nonce-n' https://cdn.example",
+			Headers::strict( array( 'script-src' => 'https://cdn.example' ), 'n' )['Content-Security-Policy'],
+		);
+		$this->assertStringContainsString(
+			"script-src 'self' 'nonce-n'",
+			Headers::strict( array( 'script-src' => "'self' 'nonce-n'" ), 'n' )['Content-Security-Policy'],
+		);
+		$this->assertStringContainsString(
+			"script-src 'none';",
+			Headers::strict( array( 'script-src' => "'none'" ), 'n' )['Content-Security-Policy'],
+		);
+	}
+
+	public function test_strict_uses_the_request_nonce_by_default(): void {
+		$this->assertStringContainsString( "'nonce-" . Headers::nonce() . "'", Headers::strict()['Content-Security-Policy'] );
+	}
+
+	public function test_strict_takes_a_referrer_and_permissions_policy(): void {
+		$headers = Headers::strict( array(), null, 'no-referrer', array( 'camera', 'usb' ) );
+
+		$this->assertSame( 'no-referrer', $headers['Referrer-Policy'] );
+		$this->assertSame( 'camera=(), usb=()', $headers['Permissions-Policy'] );
+		$this->assertArrayNotHasKey( 'Permissions-Policy', Headers::strict( permissions: array() ) );
+	}
+
+	public function test_strict_drops_x_frame_options_only_when_framing_is_allowed(): void {
+		$this->assertArrayNotHasKey( 'X-Frame-Options', Headers::strict( array( 'frame-ancestors' => 'https://a.example' ) ) );
+		$this->assertSame( 'DENY', Headers::strict( array( 'frame-ancestors' => null ) )['X-Frame-Options'] );
+	}
+
+	public function test_strict_sources_cannot_add_directives(): void {
+		$csp = Headers::strict( array( 'img-src' => "https://cdn.example; script-src 'unsafe-inline'" ) )['Content-Security-Policy'];
+
+		$this->assertStringNotContainsString( "; script-src 'unsafe-inline'", $csp );
+	}
+
+	/**
+	 * @return array<string, array{0: string|null, 1: string}>
+	 */
+	public static function bad_strict_arguments(): array {
+		return array(
+			'quote in the nonce'   => array( "n' 'unsafe-inline", 'no-referrer' ),
+			'empty nonce'          => array( '', 'no-referrer' ),
+			'unknown referrer'     => array( null, 'strict-origin-when-crossorigin' ),
+			'header in a referrer' => array( null, "no-referrer\r\nX: y" ),
+		);
+	}
+
+	#[DataProvider( 'bad_strict_arguments' )]
+	public function test_strict_refuses_a_bad_nonce_or_referrer( ?string $nonce, string $referrer ): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Headers::strict( array(), $nonce, $referrer );
+	}
 }
