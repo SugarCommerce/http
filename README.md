@@ -27,6 +27,17 @@ $router->post( '/orders', fn( $r ) => $this->create( $r ) );
 `dispatch()` returns null rather than a 404, so the caller decides what nothing
 matched looks like — an HTML page on one surface, a JSON body on another.
 
+A segment can carry a constraint the whole segment has to match. When it does
+not, the route does not match and the next one is tried:
+
+```php
+$router->get( '/orders/{id:\d+}', fn( $r, $id ) => $this->order( (int) $id ) );
+$router->get( '/orders/{ref:[A-Z0-9-]{1,64}}', fn( $r, $ref ) => $this->by_reference( $ref ) );
+```
+
+A constraint cannot contain `/`. One that does not compile, or a segment left
+unclosed, throws when the route is registered rather than never matching.
+
 ## Groups
 
 Routes behind the same check are registered together, and the check runs
@@ -351,6 +362,10 @@ than rendering a blank page, and so does a name with a `..` segment, a
 backslash or a control character in it: a template is code, and a name built
 from the URL must not be able to run any `.php` file on the disk.
 
+A template sees its data, `$e()` and nothing else — a key called `path` or
+`data` arrives as given, and `$this` is not there. A template that throws takes
+its half-rendered output with it.
+
 Not for templates you did not write — `require` executes them, so a template is
 code. This is a renderer, not a sandbox.
 
@@ -360,7 +375,7 @@ code. This is a renderer, not a sandbox.
 composer test
 ```
 
-167 tests — routing and groups, surfaces by host and by prefix, input order,
+175 tests — routing, constraints and groups, templates in their own scope, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
 the CSP nonce, the strict baseline written out in full, CORS for named

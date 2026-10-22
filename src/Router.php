@@ -13,8 +13,10 @@ namespace SugarCommerce\Http;
  * Class Router
  *
  * Routes are literal paths, or patterns with `{name}` segments that are passed
- * to the handler as arguments. First registered match wins, so order is the
- * only precedence rule there is.
+ * to the handler as arguments. A segment can carry a constraint,
+ * `{name:regex}`, which the whole segment has to match — `{id:\d+}` — or the
+ * route does not match and the next one is tried. First registered match
+ * wins, so order is the only precedence rule there is.
  *
  * Small enough to read in one screen, which is the point: a routing library
  * with compiled regular expressions and route caching is more code than most
@@ -23,6 +25,7 @@ namespace SugarCommerce\Http;
  * ```php
  * $router = new Router();
  * $router->get( '/orders/{id}', fn( $request, $id ) => $this->order( $id ) );
+ * $router->get( '/invoices/{id:\d+}', fn( $request, $id ) => $this->invoice( (int) $id ) );
  *
  * $response = $router->dispatch( $request ) ?? Response::error( 'No such endpoint.', 404 );
  * ```
@@ -45,7 +48,7 @@ final class Router {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string   $pattern Literal path, or one with `{name}` segments.
+	 * @param string   $pattern Literal path, or one with `{name}` / `{name:regex}` segments.
 	 * @param callable $handler Receives the request, then each captured segment.
 	 *
 	 * @return self
@@ -59,7 +62,7 @@ final class Router {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string   $pattern Literal path, or one with `{name}` segments.
+	 * @param string   $pattern Literal path, or one with `{name}` / `{name:regex}` segments.
 	 * @param callable $handler Receives the request, then each captured segment.
 	 *
 	 * @return self
@@ -129,7 +132,7 @@ final class Router {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string   $pattern Literal path, or one with `{name}` segments.
+	 * @param string   $pattern Literal path, or one with `{name}` / `{name:regex}` segments.
 	 * @param callable $handler Receives the request, then each captured segment.
 	 *
 	 * @return self
@@ -144,12 +147,26 @@ final class Router {
 	 * @since 1.0.0
 	 *
 	 * @param string   $method  Verb, or '*' for any.
-	 * @param string   $pattern Literal path, or one with `{name}` segments.
+	 * @param string   $pattern Literal path, or one with `{name}` / `{name:regex}` segments.
 	 * @param callable $handler Receives the request, then each captured segment.
 	 *
 	 * @return self
 	 */
 	private function add( string $method, string $pattern, callable $handler ): self {
+		foreach ( explode( '/', $pattern ) as $part ) {
+			// A half-written segment, or a constraint that does not compile,
+			// would quietly never match; refused where the route is written.
+			if ( str_starts_with( $part, '{' ) !== str_ends_with( $part, '}' ) ) {
+				throw new \InvalidArgumentException( 'Unclosed segment in route ' . json_encode( $pattern ) . ' (a constraint cannot contain "/").' );
+			}
+
+			$constraint = self::constraint( $part );
+
+			if ( null !== $constraint && ( '#^(?:)$#D' === $constraint || false === @preg_match( $constraint, '' ) ) ) {
+				throw new \InvalidArgumentException( 'Invalid constraint in route ' . json_encode( $pattern ) . '.' );
+			}
+		}
+
 		$this->routes[] = array( 'method' => $method, 'pattern' => $pattern, 'handler' => $handler );
 
 		return $this;
@@ -229,7 +246,9 @@ final class Router {
 
 		foreach ( $pattern_parts as $i => $part ) {
 			if ( str_starts_with( $part, '{' ) ) {
-				if ( '' === $path_parts[ $i ] ) {
+				$constraint = self::constraint( $part );
+
+				if ( '' === $path_parts[ $i ] || ( null !== $constraint && 1 !== preg_match( $constraint, $path_parts[ $i ] ) ) ) {
 					return null;
 				}
 
@@ -243,5 +262,24 @@ final class Router {
 		}
 
 		return $params;
+	}
+
+	/**
+	 * The anchored expression a `{name:regex}` segment has to match.
+	 *
+	 * @since 1.10.0
+	 *
+	 * @param string $part One segment of a route pattern.
+	 *
+	 * @return string|null Null for a literal segment or a plain `{name}`.
+	 */
+	private static function constraint( string $part ): ?string {
+		$colon = strpos( $part, ':' );
+
+		if ( ! str_starts_with( $part, '{' ) || ! str_ends_with( $part, '}' ) || false === $colon ) {
+			return null;
+		}
+
+		return '#^(?:' . str_replace( '#', '\\#', substr( $part, $colon + 1, -1 ) ) . ')$#D';
 	}
 }

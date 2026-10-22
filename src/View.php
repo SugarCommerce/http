@@ -99,26 +99,42 @@ final readonly class View {
 		// Templates receive $e() for escaping; forgetting it should be hard.
 		$e = static fn( mixed $value ): string => htmlspecialchars( self::text( $value ), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8' );
 
-		extract( $data, EXTR_SKIP );
+		return self::isolated( $path, $data, $e );
+	}
+
+	/**
+	 * Run one template file with only its data and $e() in scope.
+	 *
+	 * A static method, so the template cannot reach this object, and none of
+	 * the renderer's own variables are in the way: a data key called `path`,
+	 * `template` or `data` reaches the template as given. The buffer is
+	 * dropped when the template throws, so half a page never leaks into the
+	 * response.
+	 *
+	 * @since 1.10.0
+	 *
+	 * @param string               $__file Template path, already checked.
+	 * @param array<string, mixed> $__data Variables for the template.
+	 * @param \Closure             $e      The escaping helper.
+	 *
+	 * @return string
+	 */
+	private static function isolated( string $__file, array $__data, \Closure $e ): string {
+		extract( $__data, EXTR_SKIP );
+		unset( $__data );
 		ob_start();
-		require $path;
+
+		try {
+			require $__file;
+		} catch ( \Throwable $error ) {
+			ob_end_clean();
+
+			throw $error;
+		}
 
 		return (string) ob_get_clean();
 	}
 
-	/**
-	 * A template value as text, for $e().
-	 *
-	 * Scalars and anything with __toString() as themselves; null, arrays and
-	 * other objects as '' — "Array" on a page, or a fatal error half-way
-	 * through one, helps nobody.
-	 *
-	 * @since 1.6.0
-	 *
-	 * @param mixed $value Whatever the template was given.
-	 *
-	 * @return string
-	 */
 	private static function text( mixed $value ): string {
 		if ( is_bool( $value ) ) {
 			return $value ? '1' : '';

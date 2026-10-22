@@ -151,6 +151,72 @@ final class RouterTest extends TestCase {
 		$this->assertNull( $router->dispatch( $this->request( 'GET', '/files' ) ) );
 	}
 
+	public function test_a_constraint_has_to_match_the_whole_segment(): void {
+		$router = new Router();
+		$router->get( '/orders/{id:\d+}', fn( $r, string $id ) => Response::text( 'id ' . $id ) );
+
+		$this->assertSame( 'id 42', $router->dispatch( $this->request( 'GET', '/orders/42' ) )?->body );
+
+		foreach ( array( '/orders/abc', '/orders/42a', '/orders/a42', '/orders/-1', '/orders/4%0A' ) as $path ) {
+			$this->assertNull( $router->dispatch( $this->request( 'GET', $path ) ), $path );
+		}
+	}
+
+	public function test_a_refused_constraint_falls_through_to_the_next_route(): void {
+		$router = new Router();
+		$router->get( '/orders/{id:\d+}', fn() => Response::text( 'by id' ) );
+		$router->get( '/orders/{ref:[A-Za-z0-9_-]{1,64}}', fn( $r, string $ref ) => Response::text( 'by ref ' . $ref ) );
+
+		$this->assertSame( 'by id', $router->dispatch( $this->request( 'GET', '/orders/7' ) )?->body );
+		$this->assertSame( 'by ref MANUAL-1A', $router->dispatch( $this->request( 'GET', '/orders/MANUAL-1A' ) )?->body );
+		$this->assertNull( $router->dispatch( $this->request( 'GET', '/orders/' . str_repeat( 'a', 65 ) ) ) );
+		$this->assertNull( $router->dispatch( $this->request( 'GET', '/orders/a.b' ) ) );
+	}
+
+	public function test_constraints_and_plain_segments_mix(): void {
+		$router = new Router();
+		$router->post( '/r/{token:[A-Za-z0-9_.-]{1,512}}/{n}', fn( $r, string $t, string $n ) => Response::text( $t . ':' . $n ) );
+
+		$this->assertSame( 'a.b-c:x', $router->dispatch( $this->request( 'POST', '/r/a.b-c/x' ) )?->body );
+		$this->assertNull( $router->dispatch( $this->request( 'POST', '/r/a~b/x' ) ) );
+	}
+
+	public function test_a_constraint_with_a_hash_is_literal(): void {
+		$router = new Router();
+		$router->get( '/tag/{t:#[a-z]+}', fn( $r, string $t ) => Response::text( $t ) );
+
+		$this->assertSame( '#php', $router->dispatch( $this->request( 'GET', '/tag/#php' ) )?->body );
+	}
+
+	public function test_a_constraint_inside_a_group_applies(): void {
+		$router = new Router();
+		$router->group( fn() => 'acct', function ( Router $r ): void {
+			$r->get( '/files/{id:\d+}', fn( $req, string $acct, string $id ) => Response::text( $acct . $id ) );
+		}, '/api' );
+
+		$this->assertSame( 'acct9', $router->dispatch( $this->request( 'GET', '/api/files/9' ) )?->body );
+		$this->assertNull( $router->dispatch( $this->request( 'GET', '/api/files/x' ) ) );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function broken_patterns(): array {
+		return array(
+			'does not compile' => array( '/orders/{id:[0-9}' ),
+			'empty'            => array( '/orders/{id:}' ),
+			'contains a slash' => array( '/orders/{id:a/b}' ),
+			'unclosed'         => array( '/orders/{id' ),
+		);
+	}
+
+	#[DataProvider( 'broken_patterns' )]
+	public function test_a_broken_pattern_is_refused_when_registered( string $pattern ): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		( new Router() )->get( $pattern, fn() => null );
+	}
+
 	public function test_a_view_renders_inside_a_layout(): void {
 		$view = new View( __DIR__ . '/fixtures' );
 
@@ -219,6 +285,25 @@ final class RouterTest extends TestCase {
 		$html = ( new View( __DIR__ . '/fixtures' ) )->render( 'page', array( 'name' => array( 'a' ) ), '' );
 
 		$this->assertSame( '<p></p>', trim( $html ) );
+	}
+
+	public function test_data_named_like_the_renderers_own_variables_reaches_the_template(): void {
+		$view = new View( __DIR__ . '/fixtures' );
+
+		$this->assertSame( 'p|t|d|none', trim( $view->render( 'scoped', array( 'path' => 'p', 'template' => 't', 'data' => 'd' ), '' ) ) );
+	}
+
+	public function test_a_throwing_template_leaks_no_output_or_buffer(): void {
+		$level = ob_get_level();
+
+		try {
+			( new View( __DIR__ . '/fixtures' ) )->render( 'throws', array(), '' );
+			$this->fail( 'expected the template to throw' );
+		} catch ( \LogicException $e ) {
+			$this->assertSame( 'broken template', $e->getMessage() );
+		}
+
+		$this->assertSame( $level, ob_get_level() );
 	}
 
 	public function test_a_handler_must_return_a_response(): void {
