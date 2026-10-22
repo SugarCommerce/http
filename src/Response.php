@@ -114,20 +114,33 @@ final readonly class Response {
 	/**
 	 * A redirect.
 	 *
-	 * The destination is used as given. Never build it from something the
-	 * visitor sent — a `?return=` parameter, a Referer — without checking it
-	 * first: `//evil.example` and `/\evil.example` are both "a path" to a
-	 * glance and another site to a browser. Request::local_path() is that
-	 * check.
+	 * The destination has to be one of two things: a path on this site, by
+	 * Request::local_path()'s rules, or an absolute http or https URL. Any
+	 * other shape throws. `//evil.example` and `/\evil.example` are both "a
+	 * path" to a glance and another site to a browser; `javascript:` and
+	 * `data:` are not places at all; and a relative `orders` resolves
+	 * against wherever the visitor happens to be.
+	 *
+	 * An absolute URL is still used as given, so never build one from
+	 * something the visitor sent — a `?return=` parameter, a Referer —
+	 * without checking it first. Request::local_path() is that check.
 	 *
 	 * @since 1.0.0
+	 * @since 1.7.0 Refuses a destination that is neither a local path nor an
+	 *              absolute http(s) URL.
 	 *
 	 * @param string $url    Destination.
 	 * @param int    $status 302 unless the move is permanent.
 	 *
 	 * @return self
+	 *
+	 * @throws \InvalidArgumentException When the destination is neither.
 	 */
 	public static function redirect( string $url, int $status = 302 ): self {
+		if ( ! self::destination( $url ) ) {
+			throw new \InvalidArgumentException( 'Refusing to redirect to ' . json_encode( $url ) );
+		}
+
 		return new self( $status, '', array( 'Location' => $url ) );
 	}
 
@@ -256,5 +269,29 @@ final readonly class Response {
 		}
 
 		echo $this->body;
+	}
+
+	/**
+	 * Whether a URL is somewhere a redirect may send the browser.
+	 *
+	 * FILTER_VALIDATE_URL alone is not that: it passes `javascript://x%0A…`
+	 * and `mailto:`, so the scheme is checked as well. It also refuses
+	 * whitespace and control characters, which a browser would strip and
+	 * then read the URL without.
+	 *
+	 * @since 1.7.0
+	 *
+	 * @param string $url Destination.
+	 *
+	 * @return bool
+	 */
+	private static function destination( string $url ): bool {
+		if ( str_starts_with( $url, '/' ) ) {
+			return Request::local_path( $url, '' ) === $url;
+		}
+
+		$scheme = strtolower( (string) parse_url( $url, PHP_URL_SCHEME ) );
+
+		return in_array( $scheme, array( 'http', 'https' ), true ) && false !== filter_var( $url, FILTER_VALIDATE_URL );
 	}
 }

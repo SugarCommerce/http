@@ -55,10 +55,6 @@ $request->method;                  // 'POST'
 $request->path;                    // '/orders/7'
 $request->header( 'X-Signature' ); // any case
 $request->cookie( 'session' );     // '' when it is not there
-
-Response::redirect( '/orders' )->with( array(
-    'Set-Cookie' => Cookie::header( 'session', $value, $session->cookie_options( $request->secure ) ),
-) );
 $request->json();                  // decoded body, or array()
 $request->input( 'email' );        // form body, then JSON, then query string
 $request->has( 'newsletter' );     // submitted at all? (an unchecked box is not)
@@ -104,6 +100,50 @@ body is one a form on another site could be made to send.
 `cookie_path()` keeps a prefixed surface's cookies under its prefix, so a
 seller's session does not ride along on every buyer download when every
 surface shares one hostname locally.
+
+## Cookies
+
+A cookie set from a handler is a header the Response carries, so it can be
+tested and thrown away like any other:
+
+```php
+Response::redirect( '/orders' )->with( array(
+    'Set-Cookie' => Cookie::header( 'session', $value, $session->cookie_options( $request->secure ) ),
+) );
+```
+
+`header()` takes setcookie()'s own options array. It refuses a name that is not
+a token and a SameSite that is not Strict, Lax or None — some browsers fall back
+to None on a value they do not know — and strips control characters from every
+attribute, so nothing in one can add attributes or a second header. An expiry
+becomes both `Expires` and `Max-Age`.
+
+A plain PHP page that sends its own headers can do the whole job in one call:
+
+```php
+$secure = $request->is_https( TrustedProxies::cloudflare() );
+
+Cookie::set( 'theme', 'dark', 86_400 * 365, array( 'secure' => $secure ) );
+Cookie::clear( 'theme', array( 'path' => '/' ) ); // the path it was set with
+Cookie::read( 'theme' );                          // from $_COOKIE; '' when absent
+
+Cookie::set_header( 'theme', 'dark', 3600 );      // the same lines, unsent
+Cookie::clear_header( 'theme' );
+```
+
+`set()` and `clear()` default to `Path=/`, `HttpOnly` and `SameSite=Lax`, and
+send through `header()` above, so the same checks apply; several cookies in one
+response each get their own line. `Secure` is off unless you pass it, because a
+Secure cookie on a plain-HTTP development host is dropped by the browser without
+a word — pass it from the request. A `$max_age` of 0 is a session cookie;
+below 0 clears it.
+
+`clear()` has to be given the path and domain the cookie was set with. A browser
+keys a cookie on its name, domain and path together: clearing `/` does nothing to
+a cookie set at `/admin`, and the visitor stays signed in after signing out.
+
+`read()` treats a cookie sent as `name[]=x`, which PHP hands over as an array, as
+not sent.
 
 ## Surfaces
 
@@ -174,6 +214,13 @@ RFC 6266 — an ASCII fallback plus `filename*=UTF-8''…`, with quotes and cont
 characters handled — and that already lives in
 [s3-signer](https://github.com/sugarcommerce/s3-signer)'s
 `ContentDisposition::attachment()`. Use it rather than writing a second copy.
+
+`redirect()` goes to a path on this site or an absolute `http`/`https` URL, and
+throws on anything else: `//evil.example` and `/\evil.example` are other sites
+to a browser, `javascript:` and `data:` are not places at all, and a relative
+`orders` resolves against wherever the visitor happens to be. A local path is
+held to `Request::local_path()`'s rules. An absolute URL is still used as given,
+so a `?return=` the visitor sent goes through `local_path()` first.
 
 `defer()` is the one place this package schedules work. Under PHP-FPM the
 connection is closed first, so the visitor neither waits for the work nor can

@@ -123,4 +123,121 @@ final class CookieTest extends TestCase {
 		$this->assertStringContainsString( '; Max-Age=', Cookie::header( 'session', 'abc', array( 'expires' => (string) ( time() + 60 ) ) ) );
 		$this->assertSame( 'session=abc', Cookie::header( 'session', 'abc', array( 'expires' => 'soon' ) ) );
 	}
+
+	public function test_set_header_fills_in_first_party_defaults(): void {
+		$header = Cookie::set_header( 'theme', 'dark', 3600 );
+
+		$this->assertStringStartsWith( 'theme=dark; Expires=', $header );
+		$this->assertMatchesRegularExpression( '/; Max-Age=(3599|3600);/', $header );
+		$this->assertStringContainsString( '; Path=/', $header );
+		$this->assertStringContainsString( '; SameSite=Lax', $header );
+		$this->assertStringContainsString( '; HttpOnly', $header );
+		$this->assertStringNotContainsString( 'Secure', $header );
+	}
+
+	public function test_set_header_options_win_over_the_defaults(): void {
+		$header = Cookie::set_header( 'theme', 'dark', 60, array(
+			'path'     => '/admin',
+			'domain'   => 'example.test',
+			'samesite' => 'Strict',
+			'secure'   => true,
+			'httponly' => false,
+		) );
+
+		$this->assertStringContainsString( '; Path=/admin', $header );
+		$this->assertStringContainsString( '; Domain=example.test', $header );
+		$this->assertStringContainsString( '; SameSite=Strict', $header );
+		$this->assertStringContainsString( '; Secure', $header );
+		$this->assertStringNotContainsString( 'HttpOnly', $header );
+	}
+
+	/**
+	 * $max_age is the expiry; an `expires` passed alongside it would make
+	 * the two disagree.
+	 */
+	public function test_set_header_ignores_an_expires_option(): void {
+		$header = Cookie::set_header( 'theme', 'dark', 60, array( 'expires' => time() + 999_999 ) );
+
+		$this->assertMatchesRegularExpression( '/; Max-Age=(59|60);/', $header );
+	}
+
+	public function test_a_max_age_of_zero_is_a_session_cookie(): void {
+		$header = Cookie::set_header( 'theme', 'dark', 0 );
+
+		$this->assertStringNotContainsString( 'Expires', $header );
+		$this->assertStringNotContainsString( 'Max-Age', $header );
+	}
+
+	public function test_a_negative_max_age_clears(): void {
+		$this->assertStringContainsString( '; Max-Age=0', Cookie::set_header( 'theme', 'dark', -60 ) );
+	}
+
+	public function test_set_header_still_validates_the_name(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Cookie::set_header( "theme\r\nX-Evil", 'dark', 60 );
+	}
+
+	public function test_set_header_still_validates_samesite(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Cookie::set_header( 'theme', 'dark', 60, array( 'samesite' => 'Stirct' ) );
+	}
+
+	public function test_clear_header_is_empty_and_in_the_past(): void {
+		$header = Cookie::clear_header( 'theme' );
+
+		$this->assertStringStartsWith( 'theme=; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0', $header );
+		$this->assertStringContainsString( '; Path=/', $header );
+		$this->assertStringContainsString( '; SameSite=Lax', $header );
+		$this->assertStringContainsString( '; HttpOnly', $header );
+	}
+
+	/**
+	 * A browser keys a cookie on name, domain and path: clearing anywhere
+	 * else leaves the original in place.
+	 */
+	public function test_clear_header_keeps_the_path_and_domain_given(): void {
+		$header = Cookie::clear_header( 'session', array( 'path' => '/admin', 'domain' => 'example.test', 'expires' => time() + 3600 ) );
+
+		$this->assertStringContainsString( '; Path=/admin', $header );
+		$this->assertStringContainsString( '; Domain=example.test', $header );
+		$this->assertStringContainsString( '; Max-Age=0', $header );
+	}
+
+	public function test_set_and_clear_send_without_complaint(): void {
+		// header() is a no-op under the CLI; this proves only that nothing
+		// throws or warns on the way there.
+		Cookie::set( 'theme', 'dark', 60 );
+		Cookie::clear( 'theme' );
+
+		$this->addToAssertionCount( 1 );
+	}
+
+	public function test_read_returns_the_value(): void {
+		$this->assertSame( 'dark', Cookie::read( 'theme', array( 'theme' => 'dark' ) ) );
+	}
+
+	public function test_read_returns_empty_when_absent(): void {
+		$this->assertSame( '', Cookie::read( 'theme', array() ) );
+	}
+
+	/**
+	 * `theme[]=x` arrives as an array.
+	 */
+	public function test_read_treats_an_array_as_absent(): void {
+		$this->assertSame( '', Cookie::read( 'theme', array( 'theme' => array( 'x' ) ) ) );
+		$this->assertSame( '', Cookie::read( 'theme', array( 'theme' => 7 ) ) );
+	}
+
+	public function test_read_defaults_to_the_superglobal(): void {
+		$saved   = $_COOKIE;
+		$_COOKIE = array( 'theme' => 'light' );
+
+		try {
+			$this->assertSame( 'light', Cookie::read( 'theme' ) );
+		} finally {
+			$_COOKIE = $saved;
+		}
+	}
 }

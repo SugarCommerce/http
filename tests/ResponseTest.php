@@ -77,6 +77,56 @@ final class ResponseTest extends TestCase {
 		$this->assertSame( '', $response->body );
 	}
 
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function allowed_destinations(): array {
+		return array(
+			'root'             => array( '/' ),
+			'path'             => array( '/orders/7?tab=files#top' ),
+			'prefixed path'    => array( '/admin/accounts/acct_1?problem=comp&why=Bad%20date' ),
+			'https'            => array( 'https://checkout.stripe.com/c/pay/cs_test_1#fid%2Fabc' ),
+			'http'             => array( 'http://localhost:8000/app/enter/abc.def' ),
+			'loopback ipv6'    => array( 'http://[::1]:33418/callback?code=x&state=y' ),
+			'upper-case https' => array( 'HTTPS://example.com/' ),
+		);
+	}
+
+	#[DataProvider( 'allowed_destinations' )]
+	public function test_redirect_accepts_a_local_path_or_an_absolute_url( string $url ): void {
+		$this->assertSame( $url, Response::redirect( $url )->headers['Location'] );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function refused_destinations(): array {
+		return array(
+			'empty'                => array( '' ),
+			'protocol-relative'    => array( '//evil.example/' ),
+			'backslash'            => array( '/\\evil.example/' ),
+			'tab then slash'       => array( "/\t/evil.example/" ),
+			'line break'           => array( "/orders\r\nX-Evil: 1" ),
+			'space'                => array( '/orders 7' ),
+			'relative'             => array( 'orders' ),
+			'javascript'           => array( 'javascript:alert(1)' ),
+			'javascript authority' => array( 'javascript://x%0Aalert(1)' ),
+			'data'                 => array( 'data:text/html,<script>alert(1)</script>' ),
+			'mailto'               => array( 'mailto:someone@example.com' ),
+			'ftp'                  => array( 'ftp://example.com/file' ),
+			'no host'              => array( 'https:///orders' ),
+			'scheme only'          => array( 'https:' ),
+			'space in url'         => array( 'https://example.com/a b' ),
+		);
+	}
+
+	#[DataProvider( 'refused_destinations' )]
+	public function test_redirect_refuses_anything_else( string $url ): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Response::redirect( $url );
+	}
+
 	public function test_preflight_is_an_empty_204(): void {
 		$response = Response::preflight( Headers::cors() );
 
