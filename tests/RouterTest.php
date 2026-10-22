@@ -9,6 +9,7 @@ declare( strict_types=1 );
 
 namespace SugarCommerce\Http\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use SugarCommerce\Http\{Request, Response, Router, View};
 
@@ -172,5 +173,59 @@ final class RouterTest extends TestCase {
 		$this->expectException( \RuntimeException::class );
 
 		( new View( __DIR__ . '/fixtures' ) )->render( 'nope', array(), '' );
+	}
+
+	/**
+	 * A template is code: a name that climbs out of the root would run any
+	 * .php file on the disk.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function escapes(): array {
+		return array(
+			'a parent segment'     => array( '../RouterTest' ),
+			'a nested parent'      => array( 'fixtures/../../src/View' ),
+			'a backslash'          => array( '..\\RouterTest' ),
+			'a trailing parent'    => array( 'fixtures/..' ),
+			'a NUL byte'           => array( "page\0" ),
+		);
+	}
+
+	#[DataProvider( 'escapes' )]
+	public function test_a_template_name_cannot_leave_the_root( string $template ): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		( new View( __DIR__ . '/fixtures' ) )->render( $template, array(), '' );
+	}
+
+	public function test_a_layout_name_cannot_leave_the_root(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		( new View( __DIR__ . '/fixtures' ) )->render( 'page', array( 'name' => 'x' ), '../RouterTest' );
+	}
+
+	/**
+	 * The layout prints $content raw. A `content` key in the data — which
+	 * may be anything a handler was handed — must not take its place.
+	 */
+	public function test_data_cannot_replace_the_rendered_content_in_the_layout(): void {
+		$html = ( new View( __DIR__ . '/fixtures' ) )->render( 'page', array( 'name' => 'Jordan', 'content' => '<script>alert(1)</script>' ) );
+
+		$this->assertStringNotContainsString( '<script>', $html );
+		$this->assertStringContainsString( '<p>Jordan</p>', $html );
+	}
+
+	public function test_the_escape_helper_survives_a_value_that_is_not_text(): void {
+		$html = ( new View( __DIR__ . '/fixtures' ) )->render( 'page', array( 'name' => array( 'a' ) ), '' );
+
+		$this->assertSame( '<p></p>', trim( $html ) );
+	}
+
+	public function test_a_handler_must_return_a_response(): void {
+		$router = ( new Router() )->get( '/x', fn() => 'a string' );
+
+		$this->expectException( \UnexpectedValueException::class );
+
+		$router->dispatch( $this->request( 'GET', '/x' ) );
 	}
 }

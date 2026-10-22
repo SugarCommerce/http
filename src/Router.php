@@ -31,7 +31,13 @@ namespace SugarCommerce\Http;
  */
 final class Router {
 
-	/** @var array<int, array{method: string, pattern: string, handler: callable}> */
+	/**
+	 * Registered routes, in registration order.
+	 *
+	 * @since 1.0.0
+	 *
+	 * @var list<array{method: string, pattern: string, handler: callable}>
+	 */
 	private array $routes = array();
 
 	/**
@@ -105,10 +111,10 @@ final class Router {
 			$this->add(
 				$route['method'],
 				$prefix . $route['pattern'],
-				static function ( Request $request, string ...$params ) use ( $guard, $handler ): Response {
+				static function ( Request $request, string ...$params ) use ( $guard, $handler ): ?Response {
 					$passed = $guard( $request );
 
-					return $passed instanceof Response ? $passed : $handler( $request, $passed, ...$params );
+					return $passed instanceof Response ? $passed : self::response( $handler( $request, $passed, ...$params ) );
 				}
 			);
 		}
@@ -170,11 +176,31 @@ final class Router {
 			$params = $this->match( $route['pattern'], $request->path );
 
 			if ( null !== $params ) {
-				return ( $route['handler'] )( $request, ...$params );
+				return self::response( ( $route['handler'] )( $request, ...$params ) );
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * What a handler returned, as dispatch()'s answer.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param mixed $result The handler's return value.
+	 *
+	 * @return Response|null
+	 *
+	 * @throws \UnexpectedValueException When the handler returned anything
+	 *                                   but a Response or null.
+	 */
+	private static function response( mixed $result ): ?Response {
+		if ( null === $result || $result instanceof Response ) {
+			return $result;
+		}
+
+		throw new \UnexpectedValueException( 'A route handler must return a Response or null, not ' . get_debug_type( $result ) . '.' );
 	}
 
 	/**
@@ -185,7 +211,7 @@ final class Router {
 	 * @param string $pattern The route pattern.
 	 * @param string $path    The request path.
 	 *
-	 * @return array<int, string>|null Captured segments, or null on no match.
+	 * @return list<string>|null Captured segments, or null on no match.
 	 */
 	private function match( string $pattern, string $path ): ?array {
 		if ( ! str_contains( $pattern, '{' ) ) {

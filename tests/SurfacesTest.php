@@ -95,4 +95,17 @@ final class SurfacesTest extends TestCase {
 	public function test_names_are_reported(): void {
 		$this->assertSame( array( 'api', 'admin', 'app' ), $this->surfaces->names() );
 	}
+
+	/**
+	 * Where a hostname is a boundary, `www.example.com/admin` must not reach
+	 * the admin surface around whatever guards `admin.example.com`.
+	 */
+	public function test_path_prefixes_can_be_confined_to_named_hosts(): void {
+		$surfaces = new Surfaces( array( 'api', 'admin' ), default: 'site', path_hosts: array( 'localhost' ) );
+
+		$this->assertSame( 'site', $surfaces->resolve( 'www.example.com', '/admin/orders' )['surface'] );
+		$this->assertSame( '/admin/orders', $surfaces->resolve( 'www.example.com', '/admin/orders' )['path'] );
+		$this->assertSame( 'admin', $surfaces->resolve( 'localhost:8000', '/admin/orders' )['surface'] );
+		$this->assertSame( 'admin', $surfaces->resolve( 'admin.example.com', '/orders' )['surface'] );
+	}
 }

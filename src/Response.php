@@ -21,6 +21,16 @@ namespace SugarCommerce\Http;
 final readonly class Response {
 
 	/**
+	 * What a header name may be: an RFC 9110 token.
+	 *
+	 * @since 1.6.0
+	 */
+	private const string TOKEN = '/^[A-Za-z0-9!#$%&\'*+\-.^_`|~]+$/D';
+
+	/**
+	 * Build a response from its parts. The named constructors below are the
+	 * usual way in, because each carries the headers its kind of body needs.
+	 *
 	 * @param int                   $status  HTTP status code.
 	 * @param string                $body    Already-encoded body.
 	 * @param array<string, string> $headers Response headers.
@@ -36,7 +46,7 @@ final readonly class Response {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param array                 $data    Payload.
+	 * @param array<array-key, mixed> $data  Payload.
 	 * @param int                   $status  HTTP status code.
 	 * @param array<string, string> $headers Extra headers — CORS, rate-limit.
 	 *
@@ -58,7 +68,7 @@ final readonly class Response {
 	 *
 	 * @param string                $message Human-readable, and safe to show.
 	 * @param int                   $status  HTTP status code.
-	 * @param array                 $extra   Machine-readable detail merged
+	 * @param array<array-key, mixed> $extra Machine-readable detail merged
 	 *                                       into the body, e.g. a `reason`
 	 *                                       a client can branch on.
 	 * @param array<string, string> $headers Extra headers.
@@ -103,6 +113,12 @@ final readonly class Response {
 
 	/**
 	 * A redirect.
+	 *
+	 * The destination is used as given. Never build it from something the
+	 * visitor sent — a `?return=` parameter, a Referer — without checking it
+	 * first: `//evil.example` and `/\evil.example` are both "a path" to a
+	 * glance and another site to a browser. Request::local_path() is that
+	 * check.
 	 *
 	 * @since 1.0.0
 	 *
@@ -213,11 +229,26 @@ final readonly class Response {
 	/**
 	 * Send it.
 	 *
+	 * Every header is checked before anything is sent. PHP's header() refuses
+	 * a line break itself, but by warning and dropping that one header — and
+	 * a Content-Security-Policy or a Location quietly missing is worse than
+	 * a request that fails. So a name that is not a token, or a value with a
+	 * control character in it, throws instead, and nothing goes out.
+	 *
 	 * @since 1.0.0
 	 *
 	 * @return void
+	 *
+	 * @throws \UnexpectedValueException When a header could not be sent as
+	 *                                   it was given.
 	 */
 	public function send(): void {
+		foreach ( $this->headers as $name => $value ) {
+			if ( 1 !== preg_match( self::TOKEN, (string) $name ) || 1 === preg_match( '/[\x00-\x08\x0A-\x1F\x7F]/', $value ) ) {
+				throw new \UnexpectedValueException( 'Refusing to send a malformed header: ' . json_encode( (string) $name ) );
+			}
+		}
+
 		http_response_code( $this->status );
 
 		foreach ( $this->headers as $name => $value ) {

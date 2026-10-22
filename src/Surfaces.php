@@ -37,21 +37,35 @@ namespace SugarCommerce\Http;
 final readonly class Surfaces {
 
 	/**
-	 * @param array<int, string> $names       Surface names. Each is both a
-	 *                                        subdomain and a path prefix.
-	 * @param string             $default     Surface for a request matching
-	 *                                        none of them — the public one.
-	 * @param array<int, string> $keep_prefix Surfaces whose prefix stays in
-	 *                                        the path after resolving. For
-	 *                                        an API whose published routes
-	 *                                        already include `/api`, so that
-	 *                                        clients and CSP entries do not
-	 *                                        have to differ by environment.
+	 * Declare the surfaces.
+	 *
+	 * `$path_hosts` (since 1.6.0) is worth setting in any deployment where a
+	 * hostname is a boundary. Without it a path prefix is honoured on every
+	 * host, so `www.example.com/admin` reaches the admin surface as surely
+	 * as `admin.example.com` does — past anything that guards the admin
+	 * hostname itself, such as an access policy at the CDN. Name the hosts
+	 * that path prefixes are for, usually only the local ones, and on any
+	 * other host the first path segment is just a path.
+	 *
+	 * @param list<string>      $names       Surface names. Each is both a
+	 *                                       subdomain and a path prefix.
+	 * @param string            $default     Surface for a request matching
+	 *                                       none of them — the public one.
+	 * @param list<string>      $keep_prefix Surfaces whose prefix stays in
+	 *                                       the path after resolving. For
+	 *                                       an API whose published routes
+	 *                                       already include `/api`, so that
+	 *                                       clients and CSP entries do not
+	 *                                       have to differ by environment.
+	 * @param list<string>|null $path_hosts  Hosts, without a port, on which
+	 *                                       a path prefix picks the surface;
+	 *                                       null for every host.
 	 */
 	public function __construct(
 		private array $names,
 		private string $default = '',
 		private array $keep_prefix = array(),
+		private ?array $path_hosts = null,
 	) {}
 
 	/**
@@ -59,7 +73,7 @@ final readonly class Surfaces {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @return array<int, string>
+	 * @return list<string>
 	 */
 	public function names(): array {
 		return $this->names;
@@ -87,9 +101,9 @@ final readonly class Surfaces {
 			);
 		}
 
-		$first = explode( '/', trim( $path, '/' ) )[0] ?? '';
+		$first = explode( '/', trim( $path, '/' ) )[0];
 
-		if ( '' !== $first && in_array( $first, $this->names, true ) ) {
+		if ( '' !== $first && in_array( $first, $this->names, true ) && $this->paths_on( $host ) ) {
 			$remainder = '/' . trim( substr( $path, strlen( $first ) + 1 ), '/' );
 
 			return array(
@@ -104,6 +118,28 @@ final readonly class Surfaces {
 			'path'    => $path,
 			'prefix'  => '',
 		);
+	}
+
+	/**
+	 * Whether a path prefix may pick the surface on this host.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string $host Host header, any case, with or without a port.
+	 *
+	 * @return bool
+	 */
+	private function paths_on( string $host ): bool {
+		if ( null === $this->path_hosts ) {
+			return true;
+		}
+
+		$host = strtolower( trim( $host ) );
+		$host = str_starts_with( $host, '[' )
+			? substr( $host, 0, (int) strpos( $host, ']' ) + 1 )
+			: explode( ':', $host )[0];
+
+		return in_array( $host, array_map( strtolower( ... ), $this->path_hosts ), true );
 	}
 
 	/**

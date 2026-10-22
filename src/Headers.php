@@ -26,6 +26,8 @@ final class Headers {
 
 	/**
 	 * Per-request CSP nonce, generated once and reused.
+	 *
+	 * @since 1.0.0
 	 */
 	private static ?string $nonce = null;
 
@@ -34,6 +36,13 @@ final class Headers {
 	 *
 	 * A nonce is preferable to `'unsafe-inline'`, which permits anything
 	 * injected into the page as well as the script you meant to allow.
+	 *
+	 * "This request" means this process, which under PHP-FPM is the same
+	 * thing. Under a runtime that keeps the process between requests —
+	 * FrankenPHP's worker mode, RoadRunner, Swoole — it is not, and a nonce
+	 * that outlives its request is one a visitor can read off their own page
+	 * and use in a script they inject into somebody else's. Call
+	 * reset_nonce() at the start of every request there.
 	 *
 	 * @since 1.0.0
 	 *
@@ -97,11 +106,15 @@ final class Headers {
 		$policy = self::policy();
 
 		foreach ( $allow as $directive => $sources ) {
-			$policy[ $directive ] = trim( ( $policy[ $directive ] ?? '' ) . ' ' . implode( ' ', (array) $sources ) );
+			$directive = self::directive( (string) $directive );
+
+			if ( '' !== $directive ) {
+				$policy[ $directive ] = trim( ( $policy[ $directive ] ?? '' ) . ' ' . self::sources( implode( ' ', $sources ) ) );
+			}
 		}
 
 		if ( null !== $frame_ancestors ) {
-			$policy['frame-ancestors'] = trim( $frame_ancestors );
+			$policy['frame-ancestors'] = self::sources( $frame_ancestors );
 		}
 
 		$directives = array();
@@ -159,7 +172,7 @@ final class Headers {
 			}
 		}
 
-		$directives['frame-ancestors'] = 'frame-ancestors ' . trim( $ancestors );
+		$directives['frame-ancestors'] = trim( 'frame-ancestors ' . self::sources( $ancestors ) );
 		$headers['Content-Security-Policy'] = implode( '; ', $directives );
 
 		if ( ! self::refuses_framing( $ancestors ) ) {
@@ -253,7 +266,40 @@ final class Headers {
 	}
 
 	/**
+	 * A directive name, reduced to the characters a directive name has.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string $name As given.
+	 *
+	 * @return string Lower-cased, or '' when nothing was left.
+	 */
+	private static function directive( string $name ): string {
+		return strtolower( (string) preg_replace( '/[^A-Za-z0-9-]/', '', $name ) );
+	}
+
+	/**
+	 * A source list that cannot become more than a source list.
+	 *
+	 * `;` starts another directive and `,` another policy, and a control
+	 * character makes header() refuse the whole Content-Security-Policy —
+	 * leaving the page with none. A frame-ancestors list built from a
+	 * seller's own domains is the obvious way for any of them to arrive.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string $sources Space-separated sources.
+	 *
+	 * @return string
+	 */
+	private static function sources( string $sources ): string {
+		return trim( (string) preg_replace( '/\s+/', ' ', (string) preg_replace( '/[\x00-\x08\x0A-\x1F\x7F;,]/', ' ', $sources ) ) );
+	}
+
+	/**
 	 * Whether a frame-ancestors value refuses every framer.
+	 *
+	 * @since 1.5.0
 	 *
 	 * @param string $ancestors Directive value.
 	 *
@@ -266,6 +312,8 @@ final class Headers {
 	/**
 	 * An origin as `scheme://host[:port]`, lower-cased, or ''.
 	 *
+	 * @since 1.5.0
+	 *
 	 * @param string $url An origin or URL.
 	 *
 	 * @return string
@@ -273,14 +321,14 @@ final class Headers {
 	private static function origin( string $url ): string {
 		$parts = parse_url( trim( $url ) );
 
-		if ( ! is_array( $parts ) || isset( $parts['user'] ) || '' === (string) ( $parts['host'] ?? '' ) ) {
+		if ( ! is_array( $parts ) || isset( $parts['user'] ) || ! isset( $parts['host'] ) || '' === $parts['host'] ) {
 			return '';
 		}
 
-		$scheme = strtolower( (string) ( $parts['scheme'] ?? '' ) );
+		$scheme = strtolower( $parts['scheme'] ?? '' );
 
 		return in_array( $scheme, array( 'http', 'https' ), true )
-			? $scheme . '://' . strtolower( (string) $parts['host'] ) . ( isset( $parts['port'] ) ? ':' . (int) $parts['port'] : '' )
+			? $scheme . '://' . strtolower( $parts['host'] ) . ( isset( $parts['port'] ) ? ':' . $parts['port'] : '' )
 			: '';
 	}
 

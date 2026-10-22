@@ -328,4 +328,42 @@ final class RequestTest extends TestCase {
 		$this->assertTrue( $this->request( array( 'remote' => '10.0.0.5' ) )->is_local( array( '10.0.0.5' ) ) );
 		$this->assertFalse( $this->request( array( 'remote' => '127.0.0.1' ) )->is_local( array( '10.0.0.5' ) ) );
 	}
+
+	/**
+	 * A client reaching the process directly can send X-Forwarded-Proto
+	 * itself; with the proxies named, only theirs is believed.
+	 */
+	public function test_forwarded_https_is_believed_only_from_a_named_proxy(): void {
+		$headers = array( 'x-forwarded-proto' => 'https' );
+
+		$this->assertFalse( $this->request( array( 'headers' => $headers, 'remote' => '198.51.100.7' ) )->is_https( TrustedProxies::local() ) );
+		$this->assertTrue( $this->request( array( 'headers' => $headers, 'remote' => '127.0.0.1' ) )->is_https( TrustedProxies::local() ) );
+		$this->assertTrue( $this->request( array( 'secure' => true, 'remote' => '198.51.100.7' ) )->is_https( TrustedProxies::local() ) );
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function foreign_targets(): array {
+		return array(
+			'protocol-relative'       => array( '//evil.example/x' ),
+			'backslash'               => array( '/\\evil.example' ),
+			'tab the browser strips'  => array( "/\t/evil.example" ),
+			'newline'                 => array( "/\n/evil.example" ),
+			'absolute'                => array( 'https://evil.example/' ),
+			'scheme'                  => array( 'javascript:alert(1)' ),
+			'relative'                => array( 'orders' ),
+			'empty'                   => array( '' ),
+		);
+	}
+
+	#[DataProvider( 'foreign_targets' )]
+	public function test_a_target_that_leaves_the_site_becomes_the_fallback( string $target ): void {
+		$this->assertSame( '/home', Request::local_path( $target, '/home' ) );
+	}
+
+	public function test_a_local_path_is_kept(): void {
+		$this->assertSame( '/orders/42?tab=files#top', Request::local_path( '/orders/42?tab=files#top' ) );
+		$this->assertSame( '/', Request::local_path( '/' ) );
+	}
 }

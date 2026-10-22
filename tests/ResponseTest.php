@@ -317,4 +317,54 @@ final class ResponseTest extends TestCase {
 	public function test_nothing_allowed_allows_nothing(): void {
 		$this->assertSame( array( 'Vary' => 'Origin' ), Headers::cors_for( 'https://shop.example.com', array() ) );
 	}
+
+	/**
+	 * PHP's header() drops a header with a line break and only warns — a
+	 * security header quietly missing. send() refuses before sending anything.
+	 *
+	 * @return array<string, array{0: array<string, string>}>
+	 */
+	public static function malformed(): array {
+		return array(
+			'CRLF in a value'   => array( array( 'Location' => "/x\r\nSet-Cookie: admin=1" ) ),
+			'LF in a value'     => array( array( 'X-A' => "a\nb" ) ),
+			'NUL in a value'    => array( array( 'X-A' => "a\0b" ) ),
+			'colon in a name'   => array( array( 'X-A: b' => 'c' ) ),
+			'newline in a name' => array( array( "X-A\n" => 'c' ) ),
+		);
+	}
+
+	/**
+	 * @param array<string, string> $headers
+	 */
+	#[DataProvider( 'malformed' )]
+	public function test_a_malformed_header_is_refused_before_anything_is_sent( array $headers ): void {
+		$this->expectException( \UnexpectedValueException::class );
+
+		( new Response( 200, 'body', $headers ) )->send();
+	}
+
+	/**
+	 * `;` starts a directive, `,` a policy, and a line break makes header()
+	 * drop the policy altogether.
+	 */
+	public function test_a_frame_ancestors_list_cannot_add_directives(): void {
+		$csp = Headers::html( array(), "https://a.example; script-src *, \r\nX: y" )['Content-Security-Policy'];
+
+		$this->assertStringContainsString( 'frame-ancestors https://a.example script-src * X: y', $csp );
+		$this->assertSame( 1, substr_count( $csp, 'script-src' ) - substr_count( $csp, 'frame-ancestors https://a.example script-src' ) );
+		$this->assertStringNotContainsString( "\n", $csp );
+	}
+
+	public function test_embeddable_ancestors_cannot_add_directives(): void {
+		$csp = Headers::embeddable( Headers::html(), "https://a.example; report-uri https://evil.example" )['Content-Security-Policy'];
+
+		$this->assertStringNotContainsString( '; report-uri', $csp );
+	}
+
+	public function test_allowed_sources_cannot_add_directives(): void {
+		$csp = Headers::html( array( 'img-src' => array( "https://cdn.example; script-src 'unsafe-inline'" ) ) )['Content-Security-Policy'];
+
+		$this->assertStringNotContainsString( "; script-src 'unsafe-inline'", $csp );
+	}
 }

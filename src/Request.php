@@ -35,16 +35,34 @@ final readonly class Request {
 	 * tunnel or a reverse proxy on the same box — so their presence alone
 	 * proves the request crossed a network, whatever address they claim.
 	 *
+	 * The list is generous on purpose (since 1.6.0 it names every header a
+	 * common proxy, CDN or tunnel adds by default), because a name missing
+	 * from it is a proxy whose traffic looks local. It cannot be complete:
+	 * a reverse proxy configured to add nothing at all is indistinguishable
+	 * from this machine, and is_local() says so in its own documentation.
+	 *
 	 * @since 1.5.0
+	 *
+	 * @var list<string>
 	 */
 	public const array FORWARDED = array(
 		'x-forwarded-for',
 		'x-forwarded-host',
+		'x-forwarded-proto',
+		'x-forwarded-port',
+		'x-forwarded-server',
+		'x-forwarded',
+		'x-original-forwarded-for',
 		'x-real-ip',
+		'x-client-ip',
+		'x-cluster-client-ip',
 		'forwarded',
+		'forwarded-for',
+		'via',
 		'cf-connecting-ip',
 		'cf-ray',
 		'true-client-ip',
+		'fastly-client-ip',
 	);
 
 	/**
@@ -55,18 +73,27 @@ final readonly class Request {
 	 * its address.
 	 *
 	 * @since 1.5.0
+	 *
+	 * @var list<string>
 	 */
 	public const array LOOPBACK = array( '127.0.0.1', '::1' );
 
 	/**
+	 * Build a request from its parts. capture() is the usual way in; this is
+	 * for tests, and for anything that has a request from somewhere other
+	 * than the superglobals.
+	 *
 	 * @param string                $method  Upper-case verb.
 	 * @param string                $path    Path, with any surface prefix
 	 *                                       already resolved.
 	 * @param string                $host    Lower-cased host.
-	 * @param array                 $query   Query parameters.
+	 * @param array<array-key, mixed> $query Query parameters, as PHP parsed
+	 *                                       them: values may be nested
+	 *                                       arrays.
 	 * @param array<string, string> $headers Lower-cased header names.
 	 * @param string                $body    Raw body, read once.
-	 * @param array                 $form    Form-encoded body parameters.
+	 * @param array<array-key, mixed> $form  Form-encoded body parameters,
+	 *                                       as PHP parsed them.
 	 * @param string                $surface Which surface this is for.
 	 * @param string                $prefix  The surface's local mount point,
 	 *                                       '' when it has its own hostname.
@@ -110,14 +137,18 @@ final readonly class Request {
 	 * @return self
 	 */
 	public static function capture( ?Surfaces $surfaces = null ): self {
-		$host = strtolower( (string) ( $_SERVER['HTTP_HOST'] ?? 'localhost' ) );
-		$path = '/' . trim( (string) ( parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '/' ), PHP_URL_PATH ) ?: '' ), '/' );
+		$host     = strtolower( self::server_string( 'HTTP_HOST', 'localhost' ) );
+		$uri_path = parse_url( self::server_string( 'REQUEST_URI', '/' ), PHP_URL_PATH );
+		$uri_path = is_string( $uri_path ) && '' !== $uri_path ? $uri_path : '/';
+		$path     = '/' . trim( $uri_path, '/' );
 
 		$resolved = $surfaces?->resolve( $host, $path )
 			?? array( 'surface' => '', 'path' => $path, 'prefix' => '' );
 
+		$https = self::server_string( 'HTTPS' );
+
 		return new self(
-			method:  strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) ),
+			method:  strtoupper( self::server_string( 'REQUEST_METHOD', 'GET' ) ),
 			path:    $resolved['path'],
 			host:    $host,
 			query:   $_GET,
@@ -126,10 +157,10 @@ final readonly class Request {
 			form:    $_POST,
 			surface: $resolved['surface'],
 			prefix:  $resolved['prefix'],
-			remote:  (string) ( $_SERVER['REMOTE_ADDR'] ?? '' ),
-			secure:  ! empty( $_SERVER['HTTPS'] ) && 'off' !== strtolower( (string) $_SERVER['HTTPS'] ),
-			cookies: $_COOKIE,
-			uri_path: (string) ( parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '/' ), PHP_URL_PATH ) ?: '/' ),
+			remote:  self::server_string( 'REMOTE_ADDR' ),
+			secure:  '' !== $https && 'off' !== strtolower( $https ),
+			cookies: self::read_cookies(),
+			uri_path: $uri_path,
 		);
 	}
 
@@ -147,9 +178,11 @@ final readonly class Request {
 	 * @return string
 	 */
 	public function cookie( string $name ): string {
+		// The property is documented as strings, and capture() keeps it so,
+		// but a request built by hand can be handed anything.
 		$value = $this->cookies[ $name ] ?? '';
 
-		return is_string( $value ) ? $value : '';
+		return is_string( $value ) ? $value : ''; // @phpstan-ignore function.alreadyNarrowedType (a hand-built request is not bound by the PHPDoc; only capture() keeps the promise)
 	}
 
 	/**
@@ -170,6 +203,37 @@ final readonly class Request {
 	}
 
 	/**
+	 * A redirect target the visitor supplied, if it stays on this site.
+	 *
+	 * For a `?return=` or `next` parameter: the target is kept only when it
+	 * is a path on this host, and anything else becomes the fallback. "A
+	 * path" is narrower than it looks — `//evil.example` is another site,
+	 * and so is `/\evil.example`, because browsers read a backslash as a
+	 * slash; a tab or a line break is dropped by the browser before it reads
+	 * the URL, so `/<TAB>/evil.example` is the first of those again. So the
+	 * target has to start with exactly one `/`, and carry no backslash and
+	 * no control character or space anywhere.
+	 *
+	 * ```php
+	 * return Response::redirect( $request->url( Request::local_path( $request->input( 'return' ), '/orders' ) ) );
+	 * ```
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string $target   The target as sent.
+	 * @param string $fallback Used when the target is not a local path.
+	 *
+	 * @return string
+	 */
+	public static function local_path( string $target, string $fallback = '/' ): string {
+		if ( ! str_starts_with( $target, '/' ) || str_starts_with( $target, '//' ) ) {
+			return $fallback;
+		}
+
+		return 1 === preg_match( '/[\\\\\x00-\x20\x7F]/', $target ) ? $fallback : $target;
+	}
+
+	/**
 	 * One header, or an empty string.
 	 *
 	 * @since 1.0.0
@@ -179,15 +243,18 @@ final readonly class Request {
 	 * @return string
 	 */
 	public function header( string $name ): string {
-		return (string) ( $this->headers[ strtolower( $name ) ] ?? '' );
+		return $this->headers[ strtolower( $name ) ] ?? '';
 	}
 
 	/**
 	 * The decoded JSON body, or an empty array.
 	 *
+	 * A body that decodes to anything but an object or array — a bare
+	 * string, a number, invalid JSON — is an empty array, not an error.
+	 *
 	 * @since 1.0.0
 	 *
-	 * @return array
+	 * @return array<array-key, mixed>
 	 */
 	public function json(): array {
 		$data = json_decode( $this->body, true );
@@ -250,12 +317,31 @@ final readonly class Request {
 	 * the browser's was HTTPS, so the forwarded header is the authoritative
 	 * answer and `$_SERVER['HTTPS']` is not.
 	 *
+	 * But X-Forwarded-Proto is a header like any other, and a client that
+	 * reaches this process without a proxy can send it. Pass the proxies
+	 * (since 1.6.0) and it is believed only from them, the same rule ip()
+	 * follows. Without them it is believed from anyone, as it always has
+	 * been — which is what an application behind a proxy it never named
+	 * relies on, and why that is still the default.
+	 *
 	 * @since 1.0.0
+	 *
+	 * @param TrustedProxies|null $proxies The proxies whose X-Forwarded-Proto
+	 *                                     is believed, or null to believe it
+	 *                                     from anyone.
 	 *
 	 * @return bool
 	 */
-	public function is_https(): bool {
-		return 'https' === strtolower( $this->header( 'x-forwarded-proto' ) ) || $this->secure;
+	public function is_https( ?TrustedProxies $proxies = null ): bool {
+		if ( $this->secure ) {
+			return true;
+		}
+
+		if ( null !== $proxies && ! $proxies->trusts( $this->remote ) ) {
+			return false;
+		}
+
+		return 'https' === strtolower( trim( $this->header( 'x-forwarded-proto' ) ) );
 	}
 
 	/**
@@ -296,7 +382,7 @@ final readonly class Request {
 	 * @return string
 	 */
 	public function bearer(): string {
-		return 1 === preg_match( '/^Bearer\s+(\S+)$/i', trim( $this->header( 'authorization' ) ), $match ) ? $match[1] : '';
+		return 1 === preg_match( '/^Bearer\s+(\S+)$/iD', trim( $this->header( 'authorization' ) ), $match ) ? $match[1] : '';
 	}
 
 	/**
@@ -351,9 +437,13 @@ final readonly class Request {
 	 * reverse proxy on the same box, whose requests arrive from loopback
 	 * carrying exactly those headers.
 	 *
+	 * The one thing it cannot see is a proxy on this machine configured to
+	 * add none of them: its requests are, byte for byte, local ones. Do not
+	 * put one in front of anything this method gates.
+	 *
 	 * @since 1.5.0
 	 *
-	 * @param string[] $local Socket addresses that count as this machine.
+	 * @param list<string> $local Socket addresses that count as this machine.
 	 *
 	 * @return bool
 	 */
@@ -415,11 +505,50 @@ final readonly class Request {
 		$headers = array();
 
 		foreach ( $_SERVER as $key => $value ) {
-			if ( str_starts_with( (string) $key, 'HTTP_' ) ) {
-				$headers[ strtolower( str_replace( '_', '-', substr( (string) $key, 5 ) ) ) ] = (string) $value;
+			if ( is_string( $key ) && is_string( $value ) && str_starts_with( $key, 'HTTP_' ) ) {
+				$headers[ strtolower( str_replace( '_', '-', substr( $key, 5 ) ) ) ] = $value;
 			}
 		}
 
 		return $headers;
+	}
+
+	/**
+	 * Cookies sent with the request, strings only.
+	 *
+	 * PHP turns `a[]=1` into an array, so `$_COOKIE` is not the map of
+	 * strings the property promises until anything else is dropped.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @return array<string, string>
+	 */
+	private static function read_cookies(): array {
+		$cookies = array();
+
+		foreach ( $_COOKIE as $name => $value ) {
+			if ( is_string( $value ) ) {
+				$cookies[ (string) $name ] = $value;
+			}
+		}
+
+		return $cookies;
+	}
+
+	/**
+	 * One `$_SERVER` entry as a string, or the default when it is missing
+	 * or is not one.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string $key     The `$_SERVER` key.
+	 * @param string $default Returned when the entry is absent or not scalar.
+	 *
+	 * @return string
+	 */
+	private static function server_string( string $key, string $default = '' ): string {
+		$value = $_SERVER[ $key ] ?? null;
+
+		return is_scalar( $value ) ? (string) $value : $default;
 	}
 }

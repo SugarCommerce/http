@@ -62,12 +62,13 @@ Response::redirect( '/orders' )->with( array(
 $request->json();                  // decoded body, or array()
 $request->input( 'email' );        // form body, then JSON, then query string
 $request->has( 'newsletter' );     // submitted at all? (an unchecked box is not)
-$request->is_https();
+$request->is_https( TrustedProxies::cloudflare() ); // X-Forwarded-Proto only from them
 $request->ip( TrustedProxies::cloudflare() );
 $request->bearer();                // `Authorization: Bearer …`, or ''
 $request->cookie_path();           // '/', or the surface's prefix
 $request->country( TrustedProxies::cloudflare() ); // 'DE', or ''
 $request->is_local();              // loopback, and nothing forwarded it
+Request::local_path( $request->input( 'return' ), '/orders' ); // a ?return= that stays on this site
 $request->server_vars();           // $_SERVER-shaped, for other libraries
 $request->uri_path;                // the path as sent, before surfaces
 ```
@@ -127,6 +128,14 @@ $request = Request::capture( $surfaces );
 Both deployments arrive at the same path, so one routing table serves both.
 `keep_prefix` is for an API whose published routes already include `/api`, so
 clients and CSP entries do not have to differ by environment.
+
+Wherever a hostname is a boundary — an access policy at the CDN guarding
+`admin.example.com`, say — name the hosts path prefixes are for. Otherwise
+`www.example.com/admin` reaches the admin surface too, around the guard:
+
+```php
+new Surfaces( array( 'api', 'admin' ), default: 'site', path_hosts: array( 'localhost', '127.0.0.1' ) );
+```
 
 The prefix comes back separately so a surface can rebuild its own links.
 Use `$request->url( '/orders' )` for every redirect and form action — the ones
@@ -236,8 +245,11 @@ Every template is handed `$e()` for escaping, so forgetting it takes effort:
 <h1><?= $e( $order['reference'] ) ?></h1>
 ```
 
-The layout receives the rendered template as `$content`, plus the same data. A
-missing template throws rather than rendering a blank page.
+The layout receives the rendered template as `$content`, plus the same data —
+a `content` key in the data never replaces it. A missing template throws rather
+than rendering a blank page, and so does a name with a `..` segment, a
+backslash or a control character in it: a template is code, and a name built
+from the URL must not be able to run any `.php` file on the disk.
 
 Not for templates you did not write — `require` executes them, so a template is
 code. This is a renderer, not a sandbox.

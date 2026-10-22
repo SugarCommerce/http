@@ -91,4 +91,36 @@ final class CookieTest extends TestCase {
 
 		Cookie::header( '', 'abc' );
 	}
+
+	/**
+	 * `$` without /D matches before a final newline, which let a name
+	 * ending in one through — and a line break in a Set-Cookie header.
+	 */
+	public function test_a_name_with_a_trailing_newline_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Cookie::header( "session\n", 'abc' );
+	}
+
+	public function test_every_control_character_is_removed_from_an_attribute(): void {
+		$this->assertSame( 'session=abc; Path=/ab', Cookie::header( 'session', 'abc', array( 'path' => "/a\tb\x7F" ) ) );
+	}
+
+	/**
+	 * Some browsers fall back to SameSite=None on a value they do not know.
+	 */
+	public function test_an_unknown_samesite_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Cookie::header( 'session', 'abc', array( 'samesite' => 'Stirct' ) );
+	}
+
+	public function test_samesite_is_case_insensitive(): void {
+		$this->assertStringContainsString( '; SameSite=none', Cookie::header( 'session', 'abc', array( 'samesite' => 'none', 'secure' => true ) ) );
+	}
+
+	public function test_an_expiry_given_as_a_string_still_counts(): void {
+		$this->assertStringContainsString( '; Max-Age=', Cookie::header( 'session', 'abc', array( 'expires' => (string) ( time() + 60 ) ) ) );
+		$this->assertSame( 'session=abc', Cookie::header( 'session', 'abc', array( 'expires' => 'soon' ) ) );
+	}
 }
