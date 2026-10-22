@@ -64,6 +64,10 @@ $request->bearer();                // `Authorization: Bearer …`, or ''
 $request->cookie_path();           // '/', or the surface's prefix
 $request->country( TrustedProxies::cloudflare() ); // 'DE', or ''
 $request->is_local();              // loopback, and nothing forwarded it
+$request->wants_html();            // a browser (or no Accept header), not a JSON client
+$request->origin( $site_url );     // 'https://shop.example' — the configured URL wins;
+                                   // the Host header is only a fallback for local dev
+Request::capture( $surfaces, max_body: 65536 ); // a larger body reads as empty
 Request::local_path( $request->input( 'return' ), '/orders' ); // a ?return= that stays on this site
 $request->server_vars();           // $_SERVER-shaped, for other libraries
 $request->uri_path;                // the path as sent, before surfaces

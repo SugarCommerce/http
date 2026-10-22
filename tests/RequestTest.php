@@ -366,4 +366,68 @@ final class RequestTest extends TestCase {
 		$this->assertSame( '/orders/42?tab=files#top', Request::local_path( '/orders/42?tab=files#top' ) );
 		$this->assertSame( '/', Request::local_path( '/' ) );
 	}
+
+	/* ─── wants_html() ─────────────────────────────────────────────── */
+
+	/**
+	 * @return array<string, array{string, bool}>
+	 */
+	public static function accepts(): array {
+		return array(
+			'no header'        => array( '', true ),
+			'anything'         => array( '*/*', true ),
+			'browser'          => array( 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', true ),
+			'upper case'       => array( 'TEXT/HTML', true ),
+			'json'             => array( 'application/json', false ),
+			'json then any'    => array( 'application/json, */*;q=0.1', false ),
+		);
+	}
+
+	#[DataProvider( 'accepts' )]
+	public function test_wants_html_reads_the_accept_header( string $accept, bool $html ): void {
+		$headers = '' === $accept ? array() : array( 'accept' => $accept );
+
+		$this->assertSame( $html, $this->request( array( 'headers' => $headers ) )->wants_html() );
+	}
+
+	/* ─── origin() ─────────────────────────────────────────────────── */
+
+	public function test_origin_prefers_the_configured_url(): void {
+		$request = $this->request( array( 'host' => 'evil.example', 'secure' => true ) );
+
+		$this->assertSame( 'https://shop.example.com', $request->origin( 'https://shop.example.com/some/path?q=1' ) );
+		$this->assertSame( 'https://shop.example.com:8443', $request->origin( 'https://Shop.Example.com:8443/' ) );
+		$this->assertSame( 'https://shop.example.com', $request->origin( 'https://shop.example.com:443' ) );
+	}
+
+	public function test_an_unusable_configured_url_is_not_replaced_by_the_host_header(): void {
+		$request = $this->request( array( 'host' => 'evil.example' ) );
+
+		$this->assertSame( '', $request->origin( 'not a url' ) );
+		$this->assertSame( '', $request->origin( 'ftp://files.example.com' ) );
+		$this->assertSame( '', $request->origin( 'javascript:alert(1)' ) );
+	}
+
+	public function test_origin_falls_back_to_the_host_without_a_configured_url(): void {
+		$this->assertSame( 'http://localhost:8099', $this->request( array( 'host' => 'localhost:8099' ) )->origin() );
+		$this->assertSame( 'https://example.com', $this->request( array( 'host' => 'example.com:443', 'secure' => true ) )->origin() );
+		$this->assertSame( 'http://example.com', $this->request( array( 'host' => 'example.com:80' ) )->origin() );
+	}
+
+	public function test_origin_believes_forwarded_proto_only_from_named_proxies(): void {
+		$request = $this->request( array(
+			'host'    => 'example.com',
+			'remote'  => '198.51.100.7',
+			'headers' => array( 'x-forwarded-proto' => 'https' ),
+		) );
+
+		$this->assertSame( 'http://example.com', $request->origin( '', TrustedProxies::cloudflare() ) );
+		$this->assertSame( 'https://example.com', $request->origin( '', new TrustedProxies( array( '198.51.100.0/24' ) ) ) );
+	}
+
+	public function test_a_malformed_host_gives_no_origin(): void {
+		foreach ( array( 'evil.example/path', 'a b', 'user@evil.example', "example.com\n" ) as $host ) {
+			$this->assertSame( '', $this->request( array( 'host' => $host ) )->origin(), $host );
+		}
+	}
 }

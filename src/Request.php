@@ -130,13 +130,17 @@ final readonly class Request {
 	 * Capture the current request.
 	 *
 	 * @since 1.0.0
+	 * @since 1.8.0 Takes an optional body cap.
 	 *
 	 * @param Surfaces|null $surfaces How to split the application, or null
 	 *                                when it has only one surface.
+	 * @param int           $max_body Largest body read, in bytes; a larger
+	 *                                one reads as empty. 0 for no cap beyond
+	 *                                post_max_size.
 	 *
 	 * @return self
 	 */
-	public static function capture( ?Surfaces $surfaces = null ): self {
+	public static function capture( ?Surfaces $surfaces = null, int $max_body = 0 ): self {
 		$host     = strtolower( self::server_string( 'HTTP_HOST', 'localhost' ) );
 		$uri_path = parse_url( self::server_string( 'REQUEST_URI', '/' ), PHP_URL_PATH );
 		$uri_path = is_string( $uri_path ) && '' !== $uri_path ? $uri_path : '/';
@@ -153,7 +157,7 @@ final readonly class Request {
 			host:    $host,
 			query:   $_GET,
 			headers: self::read_headers(),
-			body:    (string) file_get_contents( 'php://input' ),
+			body:    self::read_body( $max_body ),
 			form:    $_POST,
 			surface: $resolved['surface'],
 			prefix:  $resolved['prefix'],
@@ -345,6 +349,83 @@ final readonly class Request {
 	}
 
 	/**
+	 * Does this request want an HTML page rather than JSON?
+	 *
+	 * For endpoints a browser and a script both reach — a download link a
+	 * customer clicks, or the same URL called from code — so a failure can
+	 * be a rendered page for one and structured JSON for the other. No
+	 * Accept header, or `*\/*`, counts as a browser: scripts that want JSON
+	 * say so with `Accept: application/json`.
+	 *
+	 * @since 1.8.0
+	 *
+	 * @return bool
+	 */
+	public function wants_html(): bool {
+		$accept = trim( $this->header( 'accept' ) );
+
+		return '' === $accept || '*/*' === $accept || str_contains( strtolower( $accept ), 'text/html' );
+	}
+
+	/**
+	 * The absolute origin to build links with, e.g. `https://example.com`.
+	 *
+	 * Pass the site's configured URL whenever there is one, and that is what
+	 * comes back — scheme, host and any non-standard port, nothing else. The
+	 * request's own Host header is only the fallback, for a fresh install or
+	 * a local dev server, because it is whatever the client sent: a link
+	 * minted from it for an email or a recovery page can point at somebody
+	 * else's host. Its scheme comes from {@see self::is_https()} with the
+	 * same proxies, and a default port (80, 443) is dropped.
+	 *
+	 * @since 1.8.0
+	 *
+	 * @param string              $configured The site's own URL ('' when
+	 *                                        unset). Only its scheme, host
+	 *                                        and port are used.
+	 * @param TrustedProxies|null $proxies    Proxies whose X-Forwarded-Proto
+	 *                                        is believed for the fallback.
+	 *
+	 * @return string Origin without a trailing slash, or '' when the
+	 *                configured URL is unusable and there is no Host.
+	 */
+	public function origin( string $configured = '', ?TrustedProxies $proxies = null ): string {
+		if ( '' !== trim( $configured ) ) {
+			return self::origin_of( $configured );
+		}
+
+		$host = (string) preg_replace( '/:(80|443)$/D', '', $this->host );
+
+		if ( '' === $host || 1 !== preg_match( '/^[a-z0-9.\-]+(:\d{1,5})?$|^\[[0-9a-f:.]+\](:\d{1,5})?$/iD', $host ) ) {
+			return '';
+		}
+
+		return ( $this->is_https( $proxies ) ? 'https' : 'http' ) . '://' . strtolower( $host );
+	}
+
+	/**
+	 * Reduce a URL to its origin: scheme, host and a non-default port.
+	 *
+	 * @param string $url An absolute http(s) URL.
+	 *
+	 * @return string The origin, or '' when the URL is not an absolute
+	 *                http(s) URL with a host.
+	 */
+	private static function origin_of( string $url ): string {
+		$parts  = parse_url( trim( $url ) );
+		$scheme = strtolower( (string) ( $parts['scheme'] ?? '' ) );
+		$host   = strtolower( (string) ( $parts['host'] ?? '' ) );
+
+		if ( ! in_array( $scheme, array( 'http', 'https' ), true ) || '' === $host || 1 === preg_match( '/[\s\\@]/', $host ) ) {
+			return '';
+		}
+
+		$port = isset( $parts['port'] ) && ! in_array( $parts['port'], array( 80, 443 ), true ) ? ':' . $parts['port'] : '';
+
+		return $scheme . '://' . $host . $port;
+	}
+
+	/**
 	 * The client address.
 	 *
 	 * Resolved through ClientIp rather than by reading a header, because the
@@ -533,6 +614,26 @@ final readonly class Request {
 		}
 
 		return $cookies;
+	}
+
+	/**
+	 * Read the request body, up to $max bytes.
+	 *
+	 * A body larger than the cap is discarded rather than truncated: half a
+	 * JSON document is not a smaller JSON document.
+	 *
+	 * @param int $max Byte cap, or 0 for none (post_max_size still applies).
+	 *
+	 * @return string
+	 */
+	private static function read_body( int $max ): string {
+		if ( $max < 1 ) {
+			return (string) file_get_contents( 'php://input' );
+		}
+
+		$body = file_get_contents( 'php://input', false, null, 0, $max + 1 );
+
+		return is_string( $body ) && strlen( $body ) <= $max ? $body : '';
 	}
 
 	/**
