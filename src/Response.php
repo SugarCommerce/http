@@ -34,11 +34,15 @@ final readonly class Response {
 	 * @param int                   $status  HTTP status code.
 	 * @param string                $body    Already-encoded body.
 	 * @param array<string, string> $headers Response headers.
+	 * @param list<string>          $cookies Set-Cookie values beyond one in
+	 *                                       $headers — a header that may
+	 *                                       appear more than once. Since 1.12.0.
 	 */
 	public function __construct(
 		public int $status = 200,
 		public string $body = '',
 		public array $headers = array(),
+		public array $cookies = array(),
 	) {}
 
 	/**
@@ -227,16 +231,127 @@ final readonly class Response {
 	 * The same response with extra headers.
 	 *
 	 * Existing headers win, so a handler cannot have its content type
-	 * rewritten by something wrapping it.
+	 * rewritten by something wrapping it. Except Set-Cookie, which is the
+	 * one header a response may carry several of: a cookie added to a
+	 * response that already sets one is kept as well, not dropped — a
+	 * wrapper remembering a language must not cost the handler its
+	 * sign-in cookie, or the other way round.
 	 *
 	 * @since 1.0.0
+	 * @since 1.12.0 A second Set-Cookie is kept.
 	 *
 	 * @param array<string, string> $headers Headers to add.
 	 *
 	 * @return self
 	 */
 	public function with( array $headers ): self {
-		return clone( $this, array( 'headers' => $this->headers + $headers ) );
+		$cookies = $this->cookies;
+
+		foreach ( $headers as $name => $value ) {
+			if ( 0 === strcasecmp( (string) $name, 'Set-Cookie' ) && null !== $this->header( 'Set-Cookie' ) ) {
+				$cookies[] = $value;
+				unset( $headers[ $name ] );
+			}
+		}
+
+		return clone( $this, array( 'headers' => $this->headers + $headers, 'cookies' => $cookies ) );
+	}
+
+	/**
+	 * The same response with one more cookie, whatever it already sets.
+	 *
+	 * @since 1.12.0
+	 *
+	 * @param string $set_cookie A Set-Cookie value — Cookie::header()'s.
+	 *
+	 * @return self
+	 */
+	public function with_cookie( string $set_cookie ): self {
+		return null === $this->header( 'Set-Cookie' )
+			? clone( $this, array( 'headers' => $this->headers + array( 'Set-Cookie' => $set_cookie ) ) )
+			: clone( $this, array( 'cookies' => array( ...$this->cookies, $set_cookie ) ) );
+	}
+
+	/**
+	 * The same response with these headers in place of its own.
+	 *
+	 * For the deliberate override that with() refuses — a wrapper that
+	 * must change caching or framing whatever the handler said. A Set-Cookie
+	 * given here replaces every cookie the response set.
+	 *
+	 * @since 1.12.0
+	 *
+	 * @param array<string, string> $headers Headers to set.
+	 *
+	 * @return self
+	 */
+	public function replacing( array $headers ): self {
+		$kept    = array_filter( $this->headers, static fn( string $name ): bool => ! self::named( $headers, $name ), ARRAY_FILTER_USE_KEY );
+		$cookies = self::named( $headers, 'Set-Cookie' ) ? array() : $this->cookies;
+
+		return clone( $this, array( 'headers' => $headers + $kept, 'cookies' => $cookies ) );
+	}
+
+	/**
+	 * A header's value, by name in any case, or null.
+	 *
+	 * @since 1.12.0
+	 *
+	 * @param string $name Header name.
+	 *
+	 * @return string|null The first value; further Set-Cookies are in $cookies.
+	 */
+	public function header( string $name ): ?string {
+		foreach ( $this->headers as $key => $value ) {
+			if ( 0 === strcasecmp( (string) $key, $name ) ) {
+				return $value;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Every header line send() would send, with whether it replaces an
+	 * earlier one of the same name. Set-Cookie never does: one sent with
+	 * header() before this response — a flash message — stays.
+	 *
+	 * @since 1.12.0
+	 *
+	 * @return list<array{string, bool}> Line, replace.
+	 */
+	public function header_lines(): array {
+		$lines = array();
+
+		foreach ( $this->headers as $name => $value ) {
+			$lines[] = array( $name . ': ' . $value, 0 !== strcasecmp( (string) $name, 'Set-Cookie' ) );
+		}
+
+		foreach ( $this->cookies as $value ) {
+			$lines[] = array( 'Set-Cookie: ' . $value, false );
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * Whether a header list has this name, in any case.
+	 *
+	 * @since 1.12.0
+	 *
+	 * @param array<string, string> $headers Headers.
+	 * @param string                $name    Name.
+	 *
+	 * @return bool
+	 */
+	private static function named( array $headers, string $name ): bool {
+		foreach ( array_keys( $headers ) as $key ) {
+			if ( 0 === strcasecmp( (string) $key, $name ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -262,10 +377,16 @@ final readonly class Response {
 			}
 		}
 
+		foreach ( $this->cookies as $value ) {
+			if ( 1 === preg_match( '/[\x00-\x08\x0A-\x1F\x7F]/', $value ) ) {
+				throw new \UnexpectedValueException( 'Refusing to send a malformed header: "Set-Cookie"' );
+			}
+		}
+
 		http_response_code( $this->status );
 
-		foreach ( $this->headers as $name => $value ) {
-			header( $name . ': ' . $value );
+		foreach ( $this->header_lines() as [ $line, $replace ] ) {
+			header( $line, $replace );
 		}
 
 		echo $this->body;

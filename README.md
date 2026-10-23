@@ -369,6 +369,15 @@ its half-rendered output with it.
 Not for templates you did not write — `require` executes them, so a template is
 code. This is a renderer, not a sandbox.
 
+## Cookies and overrides
+
+A response can set several cookies. `with()` keeps an existing header rather than letting a wrapper rewrite it — except `Set-Cookie`, which is kept alongside, so remembering a language never costs a handler its sign-in cookie. `send()` never lets a Set-Cookie replace one sent earlier with `header()`.
+
+```php
+$response->with_cookie( Cookie::header( 'lang', 'de', $options ) );   // added, whatever it already sets
+$response->replacing( array( 'Cache-Control' => 'no-store' ) );      // the deliberate override with() refuses
+```
+
 ## Asset links
 
 ```php
@@ -384,7 +393,7 @@ Browsers and CDNs keep a static file as long as they were told to, so a deploy r
 composer test
 ```
 
-178 tests — routing, constraints and groups, versioned asset links, templates in their own scope, surfaces by host and by prefix, input order,
+183 tests — routing, constraints and groups, versioned asset links, several cookies on one response, templates in their own scope, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
 the CSP nonce, the strict baseline written out in full, CORS for named

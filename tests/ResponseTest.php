@@ -544,4 +544,52 @@ final class ResponseTest extends TestCase {
 
 		Headers::strict( array(), $nonce, $referrer );
 	}
+
+	/* ─── Several cookies, replacing (1.12.0) ───────────────────────── */
+
+	public function test_with_keeps_a_second_cookie_instead_of_dropping_it(): void {
+		$signed_in = Response::redirect( '/library' )->with( array( 'Set-Cookie' => 'session=abc; Path=/' ) );
+		$both      = $signed_in->with( array( 'Set-Cookie' => 'lang=de; Path=/', 'Content-Type' => 'text/plain' ) );
+
+		$this->assertSame( 'session=abc; Path=/', $both->header( 'set-cookie' ) );
+		$this->assertSame( array( 'lang=de; Path=/' ), $both->cookies );
+		$this->assertSame( 'text/plain', $both->header( 'Content-Type' ), 'a header it lacked is added' );
+		$this->assertSame( 'text/html; charset=utf-8', Response::html( 'x' )->with( array( 'Content-Type' => 'text/plain' ) )->header( 'Content-Type' ), 'any other header keeps its first value' );
+		$this->assertSame( array(), $signed_in->cookies, 'the original is untouched' );
+	}
+
+	public function test_with_cookie_adds_whatever_is_there(): void {
+		$one = Response::text( 'x' )->with_cookie( 'a=1' );
+		$two = $one->with_cookie( 'b=2' )->with_cookie( 'c=3' );
+
+		$this->assertSame( 'a=1', $one->header( 'Set-Cookie' ) );
+		$this->assertSame( array(), $one->cookies );
+		$this->assertSame( array( 'b=2', 'c=3' ), $two->cookies );
+	}
+
+	public function test_every_cookie_is_a_line_that_never_replaces(): void {
+		$lines = Response::text( 'x' )->with_cookie( 'a=1' )->with_cookie( 'b=2' )->header_lines();
+
+		$this->assertContains( array( 'Set-Cookie: a=1', false ), $lines );
+		$this->assertContains( array( 'Set-Cookie: b=2', false ), $lines );
+		$this->assertContains( array( 'Content-Type: text/plain; charset=utf-8', true ), $lines );
+	}
+
+	public function test_replacing_overrides_what_with_would_keep(): void {
+		$r = Response::html( '<p>x</p>' )->with_cookie( 'a=1' )->with_cookie( 'b=2' );
+
+		$this->assertSame( 'no-store', $r->replacing( array( 'cache-control' => 'no-store' ) )->header( 'Cache-Control' ) );
+		$this->assertSame( 'text/plain', $r->replacing( array( 'Content-Type' => 'text/plain' ) )->header( 'content-type' ) );
+		$this->assertSame( array( 'b=2' ), $r->replacing( array( 'X-A' => '1' ) )->cookies, 'other headers leave the cookies alone' );
+
+		$only = $r->replacing( array( 'Set-Cookie' => 'c=3' ) );
+		$this->assertSame( 'c=3', $only->header( 'Set-Cookie' ) );
+		$this->assertSame( array(), $only->cookies, 'a Set-Cookie here replaces them all' );
+	}
+
+	public function test_a_malformed_extra_cookie_is_refused_before_sending(): void {
+		$this->expectException( \UnexpectedValueException::class );
+
+		Response::text( 'x' )->with_cookie( 'a=1' )->with_cookie( "b=2\r\nX-Evil: 1" )->send();
+	}
 }
