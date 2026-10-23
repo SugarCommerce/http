@@ -378,6 +378,19 @@ $response->with_cookie( Cookie::header( 'lang', 'de', $options ) );   // added, 
 $response->replacing( array( 'Cache-Control' => 'no-store' ) );      // the deliberate override with() refuses
 ```
 
+## Streaming
+
+For a body too big to hold — a file relayed from storage, an archive built as it goes. Headers go out with the first byte, so a source that fails before sending anything can still answer 502; output buffers are dropped and nginx told not to buffer.
+
+```php
+$out     = new Stream( array( 'Content-Type' => 'application/octet-stream', 'Content-Length' => (string) $size ) );
+$relayed = $http->stream( $url, $out->writer() );
+
+if ( ! $out->started() ) {
+    $relayed->ok ? $out->start() : http_response_code( 502 );
+}
+```
+
 ## Asset links
 
 ```php
@@ -393,7 +406,7 @@ Browsers and CDNs keep a static file as long as they were told to, so a deploy r
 composer test
 ```
 
-183 tests — routing, constraints and groups, versioned asset links, several cookies on one response, templates in their own scope, surfaces by host and by prefix, input order,
+190 tests — routing, constraints and groups, versioned asset links, several cookies on one response, streamed bodies, JSON that is never empty, templates in their own scope, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
 the CSP nonce, the strict baseline written out in full, CORS for named

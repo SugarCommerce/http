@@ -592,4 +592,21 @@ final class ResponseTest extends TestCase {
 
 		Response::text( 'x' )->with_cookie( 'a=1' )->with_cookie( "b=2\r\nX-Evil: 1" )->send();
 	}
+
+	/* ─── JSON flags, never empty (1.13.0) ──────────────────────────── */
+
+	public function test_json_is_unchanged_for_good_data_and_takes_flags(): void {
+		$this->assertSame( '{"url":"https:\/\/a.example\/x","n":1}', Response::json( array( 'url' => 'https://a.example/x', 'n' => 1 ) )->body );
+		$this->assertSame( '{"url":"https://a.example/x"}', Response::json( array( 'url' => 'https://a.example/x' ), flags: JSON_UNESCAPED_SLASHES )->body );
+	}
+
+	public function test_json_is_never_an_empty_body(): void {
+		$this->assertSame( '{"name":"a\ufffdb","ok":true}', Response::json( array( 'name' => "a\xFFb", 'ok' => true ) )->body );
+	}
+
+	public function test_json_refuses_a_value_it_cannot_hold(): void {
+		$this->expectException( \JsonException::class );
+
+		Response::json( array( 'x' => INF ) );
+	}
 }

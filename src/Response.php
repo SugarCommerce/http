@@ -48,16 +48,28 @@ final readonly class Response {
 	/**
 	 * A JSON response.
 	 *
-	 * @since 1.0.0
+	 * Never an empty body: json_encode() returns false for one string with
+	 * a broken UTF-8 byte, which as a body was a 200 with nothing in it.
+	 * Broken bytes become U+FFFD. A value JSON cannot hold at all (INF, NAN,
+	 * nesting past 512) throws instead — a 500 that says what went wrong,
+	 * rather than an answer that quietly says something else.
 	 *
-	 * @param array<array-key, mixed> $data  Payload.
-	 * @param int                   $status  HTTP status code.
-	 * @param array<string, string> $headers Extra headers — CORS, rate-limit.
+	 * @since 1.0.0
+	 * @since 1.13.0 $flags; never an empty body.
+	 *
+	 * @param array<array-key, mixed> $data    Payload.
+	 * @param int                     $status  HTTP status code.
+	 * @param array<string, string>   $headers Extra headers — CORS, rate-limit.
+	 * @param int                     $flags   More json_encode() flags —
+	 *                                         JSON_UNESCAPED_SLASHES for a
+	 *                                         spec that shows URLs unescaped.
 	 *
 	 * @return self
+	 *
+	 * @throws \JsonException On a value JSON cannot hold.
 	 */
-	public static function json( array $data, int $status = 200, array $headers = array() ): self {
-		return new self( $status, (string) json_encode( $data ), $headers + Headers::json() );
+	public static function json( array $data, int $status = 200, array $headers = array(), int $flags = 0 ): self {
+		return new self( $status, json_encode( $data, $flags | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR ), $headers + Headers::json() );
 	}
 
 	/**
