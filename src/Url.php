@@ -94,4 +94,43 @@ final readonly class Url {
 
 		return $path . $separator . $query . $fragment;
 	}
+
+	/**
+	 * A link to a static file that changes when the file does.
+	 *
+	 * Browsers and CDNs keep `/assets/app.js` for as long as they are told
+	 * to, so a deploy that changes it reaches nobody until the cache runs
+	 * out — or until each person thinks to hard-refresh. A `?v=` of the
+	 * file's modification time makes the new file a new URL; an unchanged
+	 * one keeps its URL and stays cached. A file that is not there is linked
+	 * as given, so the page still shows the 404 rather than failing to
+	 * render.
+	 *
+	 * ```php
+	 * <script src="<?= $e( Url::asset( '/assets/app.js', __DIR__ . '/public' ) ) ?>" defer></script>
+	 * // /assets/app.js?v=1785589200
+	 * ```
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $path A local path to the file, as the browser asks for it.
+	 * @param string $root The directory that path is served from.
+	 *
+	 * @return string
+	 *
+	 * @throws \InvalidArgumentException When the path is not a local path, or
+	 *                                   has a `.` or `..` segment — it is
+	 *                                   looked up on the disk.
+	 */
+	public static function asset( string $path, string $root ): string {
+		$file = (string) strtok( $path, '?#' );
+
+		if ( 1 === preg_match( '#(^|/)\.\.?(/|$)|\\\\#', $file ) ) {
+			throw new \InvalidArgumentException( 'Not an asset path: ' . json_encode( $path ) );
+		}
+
+		$full = rtrim( $root, '/' ) . $file;
+
+		return is_file( $full ) ? self::to( $path, array( 'v' => filemtime( $full ) ) ) : self::to( $path );
+	}
 }

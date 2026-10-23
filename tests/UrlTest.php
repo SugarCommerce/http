@@ -78,4 +78,46 @@ final class UrlTest extends TestCase {
 
 		Url::to( $path, array( 'q' => 'x' ) );
 	}
+
+	/* ─── asset (1.11.0) ────────────────────────────────────────────── */
+
+	public function test_an_asset_link_carries_its_modification_time(): void {
+		$root = sys_get_temp_dir() . '/url-asset-' . bin2hex( random_bytes( 4 ) );
+		mkdir( $root . '/assets', 0777, true );
+		file_put_contents( $root . '/assets/app.js', 'x' );
+		touch( $root . '/assets/app.js', 1_785_589_200 );
+		clearstatcache();
+
+		$this->assertSame( '/assets/app.js?v=1785589200', Url::asset( '/assets/app.js', $root ) );
+		$this->assertSame( '/assets/app.js?v=1785589200', Url::asset( '/assets/app.js', $root . '/' ) );
+		$this->assertSame( '/assets/app.js?x=1&v=1785589200', Url::asset( '/assets/app.js?x=1', $root ) );
+
+		touch( $root . '/assets/app.js', 1_785_589_999 );
+		clearstatcache();
+		$this->assertSame( '/assets/app.js?v=1785589999', Url::asset( '/assets/app.js', $root ), 'a changed file is a new URL' );
+	}
+
+	public function test_a_missing_asset_is_linked_as_given(): void {
+		$this->assertSame( '/assets/nope.css', Url::asset( '/assets/nope.css', sys_get_temp_dir() ) );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function not_assets(): array {
+		return array(
+			'climbs out'     => array( '/assets/../../etc/passwd' ),
+			'dot segment'    => array( '/./assets/app.js' ),
+			'backslash'      => array( '/assets\\..\\x' ),
+			'another site'   => array( '//evil.example/app.js' ),
+			'not a path'     => array( 'assets/app.js' ),
+		);
+	}
+
+	#[DataProvider( 'not_assets' )]
+	public function test_a_path_that_is_not_an_asset_is_refused( string $path ): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Url::asset( $path, sys_get_temp_dir() );
+	}
 }

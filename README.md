@@ -369,13 +369,22 @@ its half-rendered output with it.
 Not for templates you did not write — `require` executes them, so a template is
 code. This is a renderer, not a sandbox.
 
+## Asset links
+
+```php
+<script src="<?= $e( Url::asset( '/assets/app.js', __DIR__ . '/public' ) ) ?>" defer></script>
+// /assets/app.js?v=1785589200 — a new URL whenever the file changes
+```
+
+Browsers and CDNs keep a static file as long as they were told to, so a deploy reaches nobody until the cache runs out. The file's modification time in the URL makes a changed file a new URL and leaves an unchanged one cached. A missing file is linked as given; a path with `..`, `.` or a backslash throws, because it is looked up on the disk.
+
 ## Testing
 
 ```bash
 composer test
 ```
 
-175 tests — routing, constraints and groups, templates in their own scope, surfaces by host and by prefix, input order,
+181 tests — routing, constraints and groups, versioned asset links, templates in their own scope, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
 the CSP nonce, the strict baseline written out in full, CORS for named
