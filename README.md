@@ -384,7 +384,7 @@ Browsers and CDNs keep a static file as long as they were told to, so a deploy r
 composer test
 ```
 
-181 tests — routing, constraints and groups, versioned asset links, templates in their own scope, surfaces by host and by prefix, input order,
+178 tests — routing, constraints and groups, versioned asset links, templates in their own scope, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
 the CSP nonce, the strict baseline written out in full, CORS for named
