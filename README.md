@@ -196,6 +196,29 @@ The prefix comes back separately so a surface can rebuild its own links.
 Use `$request->url( '/orders' )` for every redirect and form action — the ones
 you forget work on the server and not on your machine.
 
+## Hosts
+
+The Host header is whatever the client typed. Where a subdomain picks the
+surface, `admin.evil.example` pointed at your server is the admin panel, and
+every link a page builds from the host is theirs. Name the hosts you serve and
+refuse the rest before routing:
+
+```php
+$hosts = Hosts::site( 'https://example.com', $surfaces->names() )   // example.com, www., api., admin.
+    ->with( 'files.example-cdn.com', ...( $local_dev ? Hosts::LOOPBACK : array() ) );
+
+if ( ! $hosts->allows( $request ) ) {
+    return Response::error( 'Not found.', 404 );
+}
+```
+
+Both sides are compared as `Hosts::normalize()` leaves them: lower case, no
+port, no trailing dot. IPv6 keeps its brackets in its shortest form, so
+`[::1]:8080`, `[0:0:0:0:0:0:0:1]` and a bare `::1` are all `[::1]` — the form
+Surfaces' `path_hosts` compares, so `$hosts->all()` can feed it. A Host with a
+bad port or a character no hostname has normalises to `''` and is never
+allowed. No wildcards: `admin.example.com.evil.example` is not on the list.
+
 ## Response
 
 Built and returned, not echoed. A handler that writes output directly cannot be
@@ -406,7 +429,7 @@ Browsers and CDNs keep a static file as long as they were told to, so a deploy r
 composer test
 ```
 
-190 tests — routing, constraints and groups, versioned asset links, several cookies on one response, streamed bodies, JSON that is never empty, templates in their own scope, surfaces by host and by prefix, input order,
+351 tests — routing, the hosts an install answers to (ports, IPv6, trailing dots, garbage), constraints and groups, versioned asset links, several cookies on one response, streamed bodies, JSON that is never empty, templates in their own scope, surfaces by host and by prefix, input order,
 cookies and their header, bearer tokens, country and loopback checks against
 forged forwarding headers, downloads, deferred work, framing, source merging,
 the CSP nonce, the strict baseline written out in full, CORS for named
